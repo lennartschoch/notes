@@ -9,6 +9,14 @@ export interface Note {
   updatedAt: string;
 }
 
+export interface Sticker {
+  id: string;
+  name: string;
+  mime: string;
+  owner: string;
+  createdAt: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -43,4 +51,16 @@ export const api = {
       body: JSON.stringify({ visibility }),
     }),
   remove: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
+  listStickers: () => request<Sticker[]>("/stickers"),
+  createSticker: (name: string, mime: string, data: string) =>
+    request<Sticker>("/stickers", {
+      method: "POST",
+      body: JSON.stringify({ name, mime, data }),
+    }),
+  removeSticker: (id: string) =>
+    request<void>(`/stickers/${id}`, { method: "DELETE" }),
 };
+
+export function stickerImageUrl(id: string): string {
+  return `/api/stickers/${id}/image`;
+}

@@ -18,6 +18,7 @@ type Pane = "list" | "editor";
 
 function stripMarkdown(line: string): string {
   return line
+    .replace(/\[sticker\b[^\]]*\]/gi, "")
     .replace(/^\s{0,3}#{1,6}\s+/, "")
     .replace(/^\s{0,3}>\s?/, "")
     .replace(/^\s{0,3}(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s+)?/, "")
