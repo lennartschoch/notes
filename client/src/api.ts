@@ -1,6 +1,10 @@
+export type Visibility = "private" | "public";
+
 export interface Note {
   id: string;
   content: string;
+  owner: string;
+  visibility: Visibility;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,6 +24,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  me: () => request<{ email: string }>("/me"),
   list: () => request<Note[]>("/notes"),
   get: (id: string) => request<Note>(`/notes/${id}`),
   create: (content = "") =>
@@ -31,6 +36,11 @@ export const api = {
     request<Note>(`/notes/${id}`, {
       method: "PUT",
       body: JSON.stringify({ content }),
+    }),
+  setVisibility: (id: string, visibility: Visibility) =>
+    request<Note>(`/notes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ visibility }),
     }),
   remove: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
 };
