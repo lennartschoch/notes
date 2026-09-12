@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "dev": {
+      "type": "service",
+      "command": "WEB_HOST=\"$HOST\" WEB_PORT=\"$PASEO_PORT\" npm run dev",
+      "port": 5173
+    }
+  }
+}

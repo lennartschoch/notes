@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    overflow: hidden;
+    -webkit-text-size-adjust: 100%;
+  }
+}
+
+/* TipTap placeholder (cannot be expressed as a utility). */
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: var(--color-slate-400);
+  pointer-events: none;
+}
+
+.tiptap:focus,
+.tiptap:focus-visible {
+  outline: none;
+}
+
+/* TipTap checklist / task list. */
+.tiptap ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+
+.tiptap ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.tiptap ul[data-type="taskList"] li > label {
+  flex: 0 0 auto;
+  margin-top: 0.3em;
+  user-select: none;
+}
+
+.tiptap ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tiptap ul[data-type="taskList"] li > div > p {
+  margin: 0;
+}
+
+.tiptap ul[data-type="taskList"] input[type="checkbox"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: var(--color-slate-900);
+  cursor: pointer;
+}
+
+.tiptap ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: var(--color-slate-400);
+  text-decoration: line-through;
+}
+
+.tiptap ul[data-type="taskList"] ul[data-type="taskList"] {
+  margin-top: 0.25rem;
+  padding-left: 0;
+}

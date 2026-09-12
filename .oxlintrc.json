@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["**/dist/**", "**/node_modules/**", "data/**"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "plugins": ["react", "jsx-a11y", "typescript", "unicorn", "oxc", "import"],
+  "rules": {
+    // The app uses the modern JSX transform (`jsx: "react-jsx"`),
+    // so React does not need to be in scope.
+    "react/react-in-jsx-scope": "off",
+    // CSS side-effect imports are handled by Vite.
+    "import/no-unassigned-import": "off",
+    // The editor intentionally focuses the textarea when a note opens.
+    "jsx-a11y/no-autofocus": "off",
+    // Express 5 forwards rejected promises from async handlers to the error
+    // middleware, so the rule's Express 4 assumption does not apply.
+    "oxc/no-async-endpoint-handlers": "off"
+  },
+  "overrides": [
+    {
+      "files": ["server/**/*.ts"],
+      "env": { "node": true }
+    },
+    {
+      "files": ["client/**/*.{ts,tsx}"],
+      "env": { "browser": true }
+    }
+  ]
+}
