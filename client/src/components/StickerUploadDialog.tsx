@@ -2,11 +2,13 @@ import { Loader2, Sparkles, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, type Sticker } from "../api";
 import { ImageCropper } from "./ImageCropper";
+import { StickerEraser } from "./StickerEraser";
 import {
   loadImage,
   readFileAsDataUrl,
   renderSticker,
   type CropRect,
+  type EraseStroke,
 } from "./stickerImage";
 
 const FULL_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
@@ -24,6 +26,9 @@ export function StickerUploadDialog({
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [source, setSource] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropRect>(FULL_CROP);
+  const [mode, setMode] = useState<"crop" | "erase">("crop");
+  const [strokes, setStrokes] = useState<EraseStroke[]>([]);
+  const [brush, setBrush] = useState(6);
   const [name, setName] = useState("");
   const [removeBg, setRemoveBg] = useState(false);
   const [tolerance, setTolerance] = useState(32);
@@ -38,13 +43,24 @@ export function StickerUploadDialog({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose]);
 
+  // Base result (crop + magic removal, before brush strokes) is what the
+  // eraser paints on; strokes are applied on top by the preview and on save.
+  const base = useMemo(() => {
+    if (!image) return null;
+    return renderSticker(image, crop, {
+      removeBackground: removeBg,
+      tolerance,
+    });
+  }, [image, crop, removeBg, tolerance]);
+
   const preview = useMemo(() => {
     if (!image) return null;
     return renderSticker(image, crop, {
       removeBackground: removeBg,
       tolerance,
+      strokes,
     }).toDataURL(OUTPUT_MIME);
-  }, [image, crop, removeBg, tolerance]);
+  }, [image, crop, removeBg, tolerance, strokes]);
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
@@ -55,6 +71,8 @@ export function StickerUploadDialog({
       setSource(dataUrl);
       setImage(loaded);
       setCrop(FULL_CROP);
+      setMode("crop");
+      setStrokes([]);
       setName(file.name.replace(/\.[^.]+$/, "").slice(0, 60) || "Sticker");
       setRemoveBg(false);
     } catch {
@@ -70,6 +88,7 @@ export function StickerUploadDialog({
       const dataUrl = renderSticker(image, crop, {
         removeBackground: removeBg,
         tolerance,
+        strokes,
       }).toDataURL(OUTPUT_MIME);
       const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
       const sticker = await api.createSticker(name, OUTPUT_MIME, base64);
@@ -125,10 +144,82 @@ export function StickerUploadDialog({
         ) : (
           <div className="flex flex-col gap-4">
             <div className="flex justify-center">
-              {source && (
-                <ImageCropper src={source} crop={crop} onChange={setCrop} />
-              )}
+              <div
+                className="flex rounded-lg border border-slate-200 p-0.5 text-sm font-medium"
+                role="tablist"
+                aria-label="Sticker editing mode"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "crop"}
+                  className={`rounded-md px-3 py-1.5 ${
+                    mode === "crop"
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                  onClick={() => setMode("crop")}
+                >
+                  Crop
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={mode === "erase"}
+                  className={`rounded-md px-3 py-1.5 ${
+                    mode === "erase"
+                      ? "bg-slate-900 text-white"
+                      : "text-slate-600 hover:bg-slate-100"
+                  }`}
+                  onClick={() => setMode("erase")}
+                >
+                  Erase
+                </button>
+              </div>
             </div>
+
+            <div className="flex justify-center">
+              {mode === "crop"
+                ? source && (
+                    <ImageCropper src={source} crop={crop} onChange={setCrop} />
+                  )
+                : base && (
+                    <StickerEraser
+                      base={base}
+                      crop={crop}
+                      naturalWidth={image?.naturalWidth ?? 1}
+                      naturalHeight={image?.naturalHeight ?? 1}
+                      strokes={strokes}
+                      brush={brush / 100}
+                      onStrokesChange={setStrokes}
+                    />
+                  )}
+            </div>
+
+            {mode === "erase" && (
+              <div className="flex flex-col gap-2">
+                <label className="flex flex-wrap items-center justify-between gap-1 text-sm text-slate-600">
+                  Brush size
+                  <span>{brush}</span>
+                  <input
+                    type="range"
+                    min={1}
+                    max={30}
+                    value={brush}
+                    onChange={(event) => setBrush(Number(event.target.value))}
+                    className="w-full accent-slate-900"
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="self-start rounded-lg px-2 py-1 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+                  onClick={() => setStrokes([])}
+                  disabled={strokes.length === 0}
+                >
+                  Clear brush strokes
+                </button>
+              </div>
+            )}
 
             <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
               Name
@@ -149,7 +240,7 @@ export function StickerUploadDialog({
                 className="h-4 w-4 accent-slate-900"
               />
               <Sparkles size={16} />
-              Remove background
+              Magic background removal
             </label>
 
             {removeBg && (

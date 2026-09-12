@@ -1,12 +1,14 @@
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, X } from "lucide-react";
 import { stickerImageUrl, type Sticker } from "../api";
 
 interface StickerPickerProps {
   stickers: Sticker[];
   loading: boolean;
   error: boolean;
+  canDelete: (sticker: Sticker) => boolean;
   onPick: (sticker: Sticker) => void;
   onAdd: () => void;
+  onDelete: (sticker: Sticker) => void;
   onClose: () => void;
 }
 
@@ -14,8 +16,10 @@ export function StickerPicker({
   stickers,
   loading,
   error,
+  canDelete,
   onPick,
   onAdd,
+  onDelete,
   onClose,
 }: StickerPickerProps) {
   return (
@@ -55,19 +59,31 @@ export function StickerPicker({
         ) : (
           <div className="grid max-h-64 grid-cols-4 gap-1 overflow-y-auto">
             {stickers.map((sticker) => (
-              <button
-                key={sticker.id}
-                type="button"
-                title={sticker.name}
-                className="flex h-14 w-14 items-center justify-center rounded-lg p-1 hover:bg-slate-100 active:bg-slate-200"
-                onClick={() => onPick(sticker)}
-              >
-                <img
-                  src={stickerImageUrl(sticker.id)}
-                  alt={sticker.name}
-                  className="max-h-12 max-w-12 object-contain"
-                />
-              </button>
+              <div key={sticker.id} className="relative flex justify-center">
+                <button
+                  type="button"
+                  title={sticker.name}
+                  className="flex h-14 w-14 items-center justify-center rounded-lg p-1 hover:bg-slate-100 active:bg-slate-200"
+                  onClick={() => onPick(sticker)}
+                >
+                  <img
+                    src={stickerImageUrl(sticker.id)}
+                    alt={sticker.name}
+                    className="max-h-12 max-w-12 object-contain"
+                  />
+                </button>
+                {canDelete(sticker) && (
+                  <button
+                    type="button"
+                    aria-label={`Delete ${sticker.name}`}
+                    title={`Delete ${sticker.name}`}
+                    className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full bg-white text-slate-500 shadow ring-1 ring-slate-200 hover:bg-red-50 hover:text-red-600 active:bg-red-50 active:text-red-600"
+                    onClick={() => onDelete(sticker)}
+                  >
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
