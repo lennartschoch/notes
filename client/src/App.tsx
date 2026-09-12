@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Globe, Lock } from "lucide-react";
 import { api, type Note } from "./api";
 
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor"));
@@ -47,12 +48,19 @@ export default function App() {
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [loading, setLoading] = useState(true);
   const [pane, setPane] = useState<Pane>("list");
+  const [email, setEmail] = useState<string | null>(null);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<{ id: string; content: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    api
+      .me()
+      .then(({ email: current }) => {
+        if (!cancelled) setEmail(current);
+      })
+      .catch(() => {});
     api
       .list()
       .then((list) => {
@@ -173,6 +181,23 @@ export default function App() {
     });
   }
 
+  async function toggleVisibility() {
+    const note = notes.find((n) => n.id === selectedId);
+    if (!note) return;
+    const visibility = note.visibility === "private" ? "public" : "private";
+    try {
+      const updated = await api.setVisibility(note.id, visibility);
+      setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  const selectedNote = notes.find((note) => note.id === selectedId);
+  const canToggle =
+    selectedNote != null &&
+    (selectedNote.owner === "" || selectedNote.owner === email);
+
   return (
     <div className="flex h-dvh bg-white text-slate-900" data-pane={pane}>
       <aside
@@ -206,8 +231,15 @@ export default function App() {
                   }`}
                   onClick={() => void selectNote(note.id)}
                 >
-                  <span className="truncate font-semibold">
-                    {titleFor(note.content)}
+                  <span className="flex items-center gap-1.5 font-semibold">
+                    {note.visibility === "public" && (
+                      <Globe
+                        size={14}
+                        className="flex-none text-slate-400"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span className="truncate">{titleFor(note.content)}</span>
                   </span>
                   <span className="truncate text-sm text-slate-500">
                     {previewFor(note.content)}
@@ -234,7 +266,7 @@ export default function App() {
       >
         {selectedId ? (
           <>
-            <header className="flex min-h-12 items-center justify-between gap-3 px-4 pb-1 pt-[calc(0.25rem+env(safe-area-inset-top))] md:min-h-10 md:justify-end md:pt-3">
+            <header className="flex min-h-12 items-center gap-3 px-4 pb-1 pt-[calc(0.25rem+env(safe-area-inset-top))] md:min-h-10 md:pt-3">
               <button
                 type="button"
                 className="-ml-3 flex h-11 w-11 items-center justify-center rounded-lg text-xl leading-none hover:bg-slate-100 active:bg-slate-100 md:hidden"
@@ -243,16 +275,37 @@ export default function App() {
               >
                 ←
               </button>
-              <span
-                className={`text-[0.8125rem] ${
-                  status === "error" ? "text-red-600" : "text-slate-500"
-                }`}
-                aria-live="polite"
-              >
-                {status === "saving" && "Saving…"}
-                {status === "saved" && "Saved"}
-                {status === "error" && "Save failed"}
-              </span>
+              <div className="ml-auto flex items-center gap-3">
+                <button
+                  type="button"
+                  className="flex h-9 flex-none items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[0.8125rem] font-medium text-slate-700 hover:bg-slate-100 active:bg-slate-100 disabled:opacity-40"
+                  onClick={() => void toggleVisibility()}
+                  disabled={!canToggle}
+                  aria-pressed={selectedNote?.visibility === "public"}
+                  title={
+                    selectedNote?.visibility === "public"
+                      ? "Public — visible to everyone with access"
+                      : "Private — only you can see this note"
+                  }
+                >
+                  {selectedNote?.visibility === "public" ? (
+                    <Globe size={16} />
+                  ) : (
+                    <Lock size={16} />
+                  )}
+                  {selectedNote?.visibility === "public" ? "Public" : "Private"}
+                </button>
+                <span
+                  className={`text-[0.8125rem] ${
+                    status === "error" ? "text-red-600" : "text-slate-500"
+                  }`}
+                  aria-live="polite"
+                >
+                  {status === "saving" && "Saving…"}
+                  {status === "saved" && "Saved"}
+                  {status === "error" && "Save failed"}
+                </span>
+              </div>
             </header>
             <Suspense
               fallback={<p className="p-4 text-slate-500">Loading editor…</p>}

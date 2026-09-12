@@ -7,12 +7,14 @@ import express, {
   type Request,
   type Response,
 } from "express";
+import { requireUser } from "./auth.js";
 import {
   createNote,
   deleteNote,
   getNote,
   init,
   listNotes,
+  setNoteVisibility,
   updateNote,
 } from "./store.js";
 
@@ -27,12 +29,16 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/notes", (_req, res) => {
-  res.json(listNotes());
+app.get("/api/me", requireUser, (req, res) => {
+  res.json({ email: req.user!.email });
 });
 
-app.get("/api/notes/:id", (req, res) => {
-  const note = getNote(req.params.id);
+app.get("/api/notes", requireUser, (req, res) => {
+  res.json(listNotes(req.user!.email));
+});
+
+app.get("/api/notes/:id", requireUser, (req, res) => {
+  const note = getNote(String(req.params.id), req.user!.email);
   if (!note) {
     res.status(404).json({ error: "Note not found" });
     return;
@@ -42,18 +48,22 @@ app.get("/api/notes/:id", (req, res) => {
 
 // Express 5 forwards rejected promises from async handlers to the error
 // middleware, so no wrapper is needed.
-app.post("/api/notes", async (req, res) => {
+app.post("/api/notes", requireUser, async (req, res) => {
   const content = typeof req.body?.content === "string" ? req.body.content : "";
-  const note = await createNote(content);
+  const note = await createNote(content, req.user!.email);
   res.status(201).json(note);
 });
 
-app.put("/api/notes/:id", async (req, res) => {
+app.put("/api/notes/:id", requireUser, async (req, res) => {
   if (typeof req.body?.content !== "string") {
     res.status(400).json({ error: "content must be a string" });
     return;
   }
-  const note = await updateNote(req.params.id, req.body.content);
+  const note = await updateNote(
+    String(req.params.id),
+    req.body.content,
+    req.user!.email,
+  );
   if (!note) {
     res.status(404).json({ error: "Note not found" });
     return;
@@ -61,8 +71,26 @@ app.put("/api/notes/:id", async (req, res) => {
   res.json(note);
 });
 
-app.delete("/api/notes/:id", async (req, res) => {
-  const removed = await deleteNote(req.params.id);
+app.patch("/api/notes/:id", requireUser, async (req, res) => {
+  const visibility = req.body?.visibility;
+  if (visibility !== "private" && visibility !== "public") {
+    res.status(400).json({ error: 'visibility must be "private" or "public"' });
+    return;
+  }
+  const note = await setNoteVisibility(
+    String(req.params.id),
+    visibility,
+    req.user!.email,
+  );
+  if (!note) {
+    res.status(404).json({ error: "Note not found" });
+    return;
+  }
+  res.json(note);
+});
+
+app.delete("/api/notes/:id", requireUser, async (req, res) => {
+  const removed = await deleteNote(String(req.params.id), req.user!.email);
   if (!removed) {
     res.status(404).json({ error: "Note not found" });
     return;
