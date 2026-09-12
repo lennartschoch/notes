@@ -72,3 +72,19 @@
   margin-top: 0.25rem;
   padding-left: 0;
 }
+
+/* Inline stickers: sized like an emoji glyph, transparent background. */
+.tiptap .note-sticker {
+  display: inline-block;
+  height: 1.35em;
+  width: auto;
+  max-width: none;
+  margin: 0 0.05em;
+  vertical-align: -0.3em;
+  object-fit: contain;
+}
+
+.tiptap img.note-sticker.ProseMirror-selectednode {
+  outline: 2px solid var(--color-blue-500);
+  border-radius: 0.25rem;
+}

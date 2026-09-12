@@ -12,6 +12,7 @@ import {
   Quote,
   Redo2,
   SquareCode,
+  Sticker as StickerIcon,
   Strikethrough,
   Undo2,
 } from "lucide-react";
@@ -19,6 +20,8 @@ import type { ReactNode } from "react";
 
 interface EditorToolbarProps {
   editor: Editor;
+  stickerPickerOpen: boolean;
+  onToggleStickerPicker: () => void;
 }
 
 interface ToolbarButtonProps {
@@ -54,7 +57,11 @@ function ToolbarButton({
   );
 }
 
-export function EditorToolbar({ editor }: EditorToolbarProps) {
+export function EditorToolbar({
+  editor,
+  stickerPickerOpen,
+  onToggleStickerPicker,
+}: EditorToolbarProps) {
   const state = useEditorState({
     editor,
     selector: ({ editor: current }) => ({
@@ -182,6 +189,13 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
       </ToolbarButton>
       <ToolbarButton label="Link" active={state.link} onClick={editLink}>
         <Link2 size={20} />
+      </ToolbarButton>
+      <ToolbarButton
+        label="Sticker"
+        active={stickerPickerOpen}
+        onClick={onToggleStickerPicker}
+      >
+        <StickerIcon size={20} />
       </ToolbarButton>
 
       <span

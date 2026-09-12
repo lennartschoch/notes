@@ -3,14 +3,19 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api, type Sticker as StickerData } from "../api";
 import { EditorToolbar } from "./EditorToolbar";
+import { Sticker } from "./sticker";
+import { StickerPicker } from "./StickerPicker";
+import { StickerUploadDialog } from "./StickerUploadDialog";
 
 const extensions = [
   StarterKit.configure({ link: { openOnClick: false } }),
   Markdown,
   TaskList,
   TaskItem.configure({ nested: true }),
+  Sticker,
   Placeholder.configure({ placeholder: "Start typing…" }),
 ];
 
@@ -27,6 +32,30 @@ function MarkdownEditor({
 }: MarkdownEditorProps) {
   const onChangeRef = useRef(onChange);
   const initialMarkdownRef = useRef(initialMarkdown);
+
+  const [stickers, setStickers] = useState<StickerData[]>([]);
+  const [stickersLoading, setStickersLoading] = useState(true);
+  const [stickersError, setStickersError] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listStickers()
+      .then((list) => {
+        if (!cancelled) setStickers(list);
+      })
+      .catch(() => {
+        if (!cancelled) setStickersError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setStickersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -59,14 +88,54 @@ function MarkdownEditor({
     });
   }, [editor, noteId]);
 
+  function insertSticker(sticker: StickerData) {
+    editor
+      ?.chain()
+      .focus()
+      .insertSticker({ id: sticker.id, name: sticker.name })
+      .run();
+    setPickerOpen(false);
+  }
+
+  function handleCreated(sticker: StickerData) {
+    setStickers((prev) => [sticker, ...prev]);
+    setUploadOpen(false);
+    insertSticker(sticker);
+  }
+
   if (!editor) return null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <EditorToolbar editor={editor} />
+      <div className="relative flex-none">
+        <EditorToolbar
+          editor={editor}
+          stickerPickerOpen={pickerOpen}
+          onToggleStickerPicker={() => setPickerOpen((open) => !open)}
+        />
+        {pickerOpen && (
+          <StickerPicker
+            stickers={stickers}
+            loading={stickersLoading}
+            error={stickersError}
+            onPick={insertSticker}
+            onAdd={() => {
+              setPickerOpen(false);
+              setUploadOpen(true);
+            }}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto [-webkit-overflow-scrolling:touch]">
         <EditorContent editor={editor} />
       </div>
+      {uploadOpen && (
+        <StickerUploadDialog
+          onClose={() => setUploadOpen(false)}
+          onCreated={handleCreated}
+        />
+      )}
     </div>
   );
 }
