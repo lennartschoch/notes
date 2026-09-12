@@ -22,12 +22,14 @@ const extensions = [
 interface MarkdownEditorProps {
   noteId: string;
   initialMarkdown: string;
+  userEmail: string | null;
   onChange: (markdown: string) => void;
 }
 
 function MarkdownEditor({
   noteId,
   initialMarkdown,
+  userEmail,
   onChange,
 }: MarkdownEditorProps) {
   const onChangeRef = useRef(onChange);
@@ -103,6 +105,22 @@ function MarkdownEditor({
     insertSticker(sticker);
   }
 
+  async function handleDelete(sticker: StickerData) {
+    if (
+      !window.confirm(
+        `Delete "${sticker.name}"? Notes using it will no longer show the image.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.removeSticker(sticker.id);
+      setStickers((prev) => prev.filter((item) => item.id !== sticker.id));
+    } catch {
+      window.alert("Could not delete the sticker.");
+    }
+  }
+
   if (!editor) return null;
 
   return (
@@ -118,11 +136,15 @@ function MarkdownEditor({
             stickers={stickers}
             loading={stickersLoading}
             error={stickersError}
+            canDelete={(sticker) =>
+              sticker.owner === "" || sticker.owner === userEmail
+            }
             onPick={insertSticker}
             onAdd={() => {
               setPickerOpen(false);
               setUploadOpen(true);
             }}
+            onDelete={(sticker) => void handleDelete(sticker)}
             onClose={() => setPickerOpen(false)}
           />
         )}

@@ -8,6 +8,20 @@ export interface CropRect {
 export interface ProcessOptions {
   removeBackground: boolean;
   tolerance: number;
+  strokes?: EraseStroke[];
+}
+
+// A brush stroke stored in normalised coordinates of the *source* image, so
+// erasing survives crop changes. `radius` is a fraction of the source's
+// shorter side.
+export interface StrokePoint {
+  x: number;
+  y: number;
+}
+
+export interface EraseStroke {
+  points: StrokePoint[];
+  radius: number;
 }
 
 // Longest side of the stored sticker. Inline stickers render around 1.3em,
@@ -111,6 +125,54 @@ function removeBackground(
   ctx.putImageData(imageData, 0, 0);
 }
 
+export function paintEraseStrokes(
+  ctx: CanvasRenderingContext2D,
+  crop: CropRect,
+  strokes: EraseStroke[],
+  naturalWidth: number,
+  naturalHeight: number,
+): void {
+  if (strokes.length === 0) return;
+  const canvas = ctx.canvas;
+  const minNatural = Math.min(naturalWidth, naturalHeight);
+  // Output pixels per source pixel. The crop is scaled uniformly, so x and y
+  // share this factor.
+  const scale = canvas.width / (crop.width * naturalWidth);
+  const radiusFor = (stroke: EraseStroke) =>
+    Math.max(1, stroke.radius * minNatural * scale);
+  const map = (point: StrokePoint) => ({
+    x: ((point.x - crop.x) / crop.width) * canvas.width,
+    y: ((point.y - crop.y) / crop.height) * canvas.height,
+  });
+
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "#000";
+  ctx.strokeStyle = "#000";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const stroke of strokes) {
+    if (stroke.points.length === 0) continue;
+    const radius = radiusFor(stroke);
+    if (stroke.points.length === 1) {
+      const { x, y } = map(stroke.points[0]);
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      continue;
+    }
+    ctx.lineWidth = radius * 2;
+    ctx.beginPath();
+    stroke.points.forEach((point, index) => {
+      const { x, y } = map(point);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function renderSticker(
   image: HTMLImageElement,
   crop: CropRect,
@@ -137,5 +199,12 @@ export function renderSticker(
   if (options.removeBackground) {
     removeBackground(ctx, width, height, options.tolerance);
   }
+  paintEraseStrokes(
+    ctx,
+    crop,
+    options.strokes ?? [],
+    image.naturalWidth,
+    image.naturalHeight,
+  );
   return canvas;
 }
