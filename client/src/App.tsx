@@ -7,13 +7,20 @@ import {
   useState,
 } from "react";
 import { Globe, Lock } from "lucide-react";
-import { api, type Note } from "./api";
+import { api, ApiError, type Note } from "./api";
+import {
+  clearPendingChange,
+  loadPendingChanges,
+  mergePendingChanges,
+  savePendingChange,
+} from "./pendingChanges";
 
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor"));
 
 const SAVE_DELAY_MS = 800;
+const OFFLINE_RETRY_MS = 15000;
 
-type SaveStatus = "idle" | "saving" | "saved" | "error";
+type SaveStatus = "idle" | "saving" | "saved" | "offline" | "error";
 type Pane = "list" | "editor";
 
 function stripMarkdown(line: string): string {
@@ -52,7 +59,73 @@ export default function App() {
   const [email, setEmail] = useState<string | null>(null);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pending = useRef<{ id: string; content: string } | null>(null);
+  const pending = useRef<Map<string, string>>(new Map());
+  const flushing = useRef(false);
+
+  const flush = useCallback(async () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    if (flushing.current) return;
+    flushing.current = true;
+    try {
+      // Keep going until every pending change is either uploaded or the
+      // request fails, so a flaky connection does not block a later edit.
+      while (pending.current.size > 0) {
+        const entries = Array.from(pending.current.entries());
+        let progressed = false;
+        for (const [id, content] of entries) {
+          if (pending.current.get(id) !== content) continue;
+          try {
+            const updated = await api.update(id, content);
+            if (pending.current.get(id) === content) {
+              pending.current.delete(id);
+              clearPendingChange(id);
+            }
+            setNotes((prev) =>
+              prev.map((note) =>
+                note.id === id ? { ...updated, content } : note,
+              ),
+            );
+            progressed = true;
+          } catch (error) {
+            // The note was deleted elsewhere, so there is nothing to sync.
+            if (error instanceof ApiError && error.status === 404) {
+              pending.current.delete(id);
+              clearPendingChange(id);
+              progressed = true;
+            }
+            // Any other failure leaves the change in `pending` and in local
+            // storage so it is retried when the connection recovers.
+          }
+        }
+        if (!progressed) break;
+      }
+    } finally {
+      flushing.current = false;
+    }
+    if (pending.current.size === 0) {
+      setStatus("saved");
+    } else {
+      setStatus("offline");
+    }
+  }, []);
+
+  const scheduleSave = useCallback(
+    (id: string, content: string) => {
+      pending.current.set(id, content);
+      // Persist before the upload attempt so the edit survives a reload even if
+      // the connection is too poor to save it to the server.
+      savePendingChange(id, content);
+      setStatus("saving");
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        void flush();
+      }, SAVE_DELAY_MS);
+    },
+    [flush],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -66,11 +139,19 @@ export default function App() {
       .list()
       .then((list) => {
         if (cancelled) return;
-        setNotes(list);
-        const first = list[0];
+        const stored = loadPendingChanges();
+        for (const change of stored) {
+          pending.current.set(change.id, change.content);
+        }
+        const merged = mergePendingChanges(list, stored);
+        setNotes(merged);
+        const first = merged[0];
         if (first) {
           setSelectedId(first.id);
           setDraft(first.content);
+        }
+        if (stored.length > 0) {
+          void flush();
         }
       })
       .catch(() => setStatus("error"))
@@ -80,39 +161,21 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [flush]);
 
-  const flush = useCallback(async () => {
-    if (timer.current) {
-      clearTimeout(timer.current);
-      timer.current = null;
+  useEffect(() => {
+    function handleOnline() {
+      void flush();
     }
-    const entry = pending.current;
-    if (!entry) return;
-    pending.current = null;
-    setStatus("saving");
-    try {
-      const updated = await api.update(entry.id, entry.content);
-      setNotes((prev) =>
-        prev.map((note) => (note.id === updated.id ? updated : note)),
-      );
-      setStatus("saved");
-    } catch {
-      setStatus("error");
-    }
-  }, []);
-
-  const scheduleSave = useCallback(
-    (id: string, content: string) => {
-      pending.current = { id, content };
-      setStatus("saving");
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => {
-        void flush();
-      }, SAVE_DELAY_MS);
-    },
-    [flush],
-  );
+    window.addEventListener("online", handleOnline);
+    const retry = window.setInterval(() => {
+      if (pending.current.size > 0) void flush();
+    }, OFFLINE_RETRY_MS);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.clearInterval(retry);
+    };
+  }, [flush]);
 
   useEffect(() => {
     return () => {
@@ -138,7 +201,7 @@ export default function App() {
       if (!note) return;
       setSelectedId(id);
       setDraft(note.content);
-      setStatus("idle");
+      setStatus(pending.current.size > 0 ? "offline" : "idle");
     }
     setPane("editor");
   }
@@ -150,7 +213,7 @@ export default function App() {
       setNotes((prev) => [note, ...prev]);
       setSelectedId(note.id);
       setDraft(note.content);
-      setStatus("idle");
+      setStatus(pending.current.size > 0 ? "offline" : "idle");
       setPane("editor");
     } catch {
       setStatus("error");
@@ -159,8 +222,9 @@ export default function App() {
 
   async function removeNote(id: string) {
     if (!window.confirm("Delete this note?")) return;
-    if (pending.current?.id === id) {
-      pending.current = null;
+    if (pending.current.has(id)) {
+      pending.current.delete(id);
+      clearPendingChange(id);
       if (timer.current) clearTimeout(timer.current);
     }
     try {
@@ -175,7 +239,7 @@ export default function App() {
         const first = next[0];
         setSelectedId(first?.id ?? null);
         setDraft(first?.content ?? "");
-        setStatus("idle");
+        setStatus(pending.current.size > 0 ? "offline" : "idle");
         setPane("list");
       }
       return next;
@@ -298,12 +362,17 @@ export default function App() {
                 </button>
                 <span
                   className={`text-[0.8125rem] ${
-                    status === "error" ? "text-red-600" : "text-slate-500"
+                    status === "error"
+                      ? "text-red-600"
+                      : status === "offline"
+                        ? "text-amber-600"
+                        : "text-slate-500"
                   }`}
                   aria-live="polite"
                 >
                   {status === "saving" && "Saving…"}
                   {status === "saved" && "Saved"}
+                  {status === "offline" && "Saved on device"}
                   {status === "error" && "Save failed"}
                 </span>
               </div>

@@ -17,13 +17,23 @@ export interface Sticker {
   createdAt: string;
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, statusText: string) {
+    super(`Request failed: ${status} ${statusText}`);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
   if (!res.ok) {
-    throw new Error(`Request failed: ${res.status} ${res.statusText}`);
+    throw new ApiError(res.status, res.statusText);
   }
   if (res.status === 204) {
     return undefined as T;
