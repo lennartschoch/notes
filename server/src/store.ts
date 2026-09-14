@@ -46,6 +46,10 @@ function normalize(raw: unknown): Note {
     content: typeof note.content === "string" ? note.content : "",
     owner: typeof note.owner === "string" ? note.owner : "",
     visibility: note.visibility === "public" ? "public" : "private",
+    version:
+      typeof note.version === "number" && Number.isInteger(note.version)
+        ? note.version
+        : 0,
     createdAt: typeof note.createdAt === "string" ? note.createdAt : now,
     updatedAt: typeof note.updatedAt === "string" ? note.updatedAt : now,
   };
@@ -82,6 +86,7 @@ export async function createNote(content = "", owner: string): Promise<Note> {
     content,
     owner,
     visibility: "private",
+    version: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -90,19 +95,27 @@ export async function createNote(content = "", owner: string): Promise<Note> {
   return note;
 }
 
+export type UpdateResult =
+  | { status: "ok"; note: Note }
+  | { status: "not_found" }
+  | { status: "conflict"; note: Note };
+
 export async function updateNote(
   id: string,
   content: string,
+  version: number,
   email: string,
-): Promise<Note | undefined> {
+): Promise<UpdateResult> {
   const note = notes.find((n) => n.id === id);
-  if (!note || !canEdit(note, email)) return undefined;
+  if (!note || !canEdit(note, email)) return { status: "not_found" };
+  if (note.version !== version) return { status: "conflict", note };
   // Claim a pre-ownership note for the first user to edit it.
   if (note.owner === "") note.owner = email;
   note.content = content;
+  note.version += 1;
   note.updatedAt = new Date().toISOString();
   await persist();
-  return note;
+  return { status: "ok", note };
 }
 
 export async function setNoteVisibility(

@@ -1,12 +1,29 @@
 import type { Note } from "./api";
 
+export type PendingStatus = "pending" | "conflicted";
+
 export interface PendingChange {
   id: string;
   content: string;
+  baseVersion: number;
+  status: PendingStatus;
+  server: { content: string; version: number } | null;
   savedAt: string;
 }
 
 const STORAGE_KEY = "notes.pending-changes.v1";
+
+function readServer(raw: unknown): PendingChange["server"] {
+  if (typeof raw !== "object" || raw === null) return null;
+  const candidate = raw as { content?: unknown; version?: unknown };
+  if (
+    typeof candidate.content !== "string" ||
+    typeof candidate.version !== "number"
+  ) {
+    return null;
+  }
+  return { content: candidate.content, version: candidate.version };
+}
 
 function read(): Record<string, PendingChange> {
   try {
@@ -28,6 +45,10 @@ function read(): Record<string, PendingChange> {
       changes[id] = {
         id,
         content: candidate.content,
+        baseVersion:
+          typeof candidate.baseVersion === "number" ? candidate.baseVersion : 0,
+        status: candidate.status === "conflicted" ? "conflicted" : "pending",
+        server: readServer(candidate.server),
         savedAt:
           typeof candidate.savedAt === "string"
             ? candidate.savedAt
@@ -57,9 +78,9 @@ export function loadPendingChanges(): PendingChange[] {
   return Object.values(read());
 }
 
-export function savePendingChange(id: string, content: string): void {
+export function savePendingChange(change: PendingChange): void {
   const changes = read();
-  changes[id] = { id, content, savedAt: new Date().toISOString() };
+  changes[change.id] = { ...change, savedAt: new Date().toISOString() };
   write(changes);
 }
 

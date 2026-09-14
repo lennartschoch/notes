@@ -23,6 +23,7 @@ interface MarkdownEditorProps {
   noteId: string;
   initialMarkdown: string;
   userEmail: string | null;
+  revision: number;
   onChange: (markdown: string) => void;
 }
 
@@ -30,6 +31,7 @@ function MarkdownEditor({
   noteId,
   initialMarkdown,
   userEmail,
+  revision,
   onChange,
 }: MarkdownEditorProps) {
   const onChangeRef = useRef(onChange);
@@ -89,6 +91,17 @@ function MarkdownEditor({
       emitUpdate: false,
     });
   }, [editor, noteId]);
+
+  const lastRevision = useRef(revision);
+  useEffect(() => {
+    if (!editor || lastRevision.current === revision) return;
+    lastRevision.current = revision;
+    if (editor.getMarkdown() === initialMarkdownRef.current) return;
+    editor.commands.setContent(initialMarkdownRef.current, {
+      contentType: "markdown",
+      emitUpdate: false,
+    });
+  }, [editor, revision]);
 
   function insertSticker(sticker: StickerData) {
     editor
