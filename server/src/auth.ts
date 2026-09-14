@@ -46,8 +46,14 @@ export async function requireUser(
     return;
   }
 
+  // Outside production, allow an explicit dev/test identity via header so
+  // end-to-end tests can drive two distinct users against one server. Cloudflare
+  // Access is the only identity source in production, where this is disabled.
   if (process.env.NODE_ENV !== "production") {
-    req.user = { email: process.env.DEV_USER_EMAIL ?? "dev@localhost" };
+    const devEmail = req.header("x-dev-user-email")?.trim().toLowerCase();
+    req.user = {
+      email: devEmail || process.env.DEV_USER_EMAIL || "dev@localhost",
+    };
     next();
     return;
   }
