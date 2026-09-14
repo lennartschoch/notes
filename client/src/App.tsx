@@ -118,9 +118,16 @@ export default function App() {
               change.content,
               change.baseVersion,
             );
-            if (pending.current.get(id) === change) {
+            const queued = pending.current.get(id);
+            if (queued === change) {
               pending.current.delete(id);
               clearPendingChange(id);
+            } else if (queued && queued.status === "pending") {
+              // A newer edit was queued while this save was in flight and
+              // captured the pre-save version. Rebase it onto the version just
+              // written, otherwise its own save would falsely conflict.
+              queued.baseVersion = updated.version;
+              savePendingChange(queued);
             }
             setNotes((prev) =>
               prev.map((note) =>

@@ -5,8 +5,10 @@ const BOB = { "x-dev-user-email": "bob@test" };
 
 const PRIVATE_NOTE = "Alice private alpha";
 const PUBLIC_NOTE = "Alice public bravo";
+const RAPID_NOTE = "Alice rapid note";
 const ALICE_EDIT = "plus alice edit";
 const DEVICE_TWO_EDIT = "device two edit";
+const SAVE_DEBOUNCE_MS = 800;
 
 interface Note {
   id: string;
@@ -203,6 +205,33 @@ test("multiplayer note lifecycle", async ({ browser, playwright, baseURL }) => {
 
       await wake(bobPage);
       await expect(noteItem(bobPage, PUBLIC_NOTE)).toHaveCount(0);
+    });
+
+    await test.step("does not falsely quarantine a rapid second edit", async () => {
+      await alicePage.getByRole("button", { name: "New" }).click();
+      await appendToNote(alicePage, RAPID_NOTE);
+      await expect(status(alicePage)).toHaveText("Saved");
+
+      // Delay the first PUT so the next keystroke is queued while it is still
+      // in flight — the exact race that used to capture a stale base version.
+      let delayed = false;
+      await aliceContext.route(/\/api\/notes\/[^/]+$/, async (route) => {
+        if (route.request().method() === "PUT" && !delayed) {
+          delayed = true;
+          await new Promise((resolve) => setTimeout(resolve, SAVE_DEBOUNCE_MS));
+        }
+        await route.continue();
+      });
+
+      await appendToNote(alicePage, " one");
+      await alicePage.waitForTimeout(SAVE_DEBOUNCE_MS + 200);
+      await appendToNote(alicePage, " two");
+
+      await expect(status(alicePage)).toHaveText("Saved");
+      await expect(status(alicePage)).not.toHaveText("Changed elsewhere");
+      await expect(editor(alicePage)).toContainText("one two");
+
+      await aliceContext.unroute(/\/api\/notes\/[^/]+$/);
     });
   } finally {
     await aliceApi.dispose();
