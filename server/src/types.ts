@@ -5,6 +5,7 @@ export interface Note {
   content: string;
   owner: string;
   visibility: Visibility;
+  version: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -68,20 +68,32 @@ app.post("/api/notes", requireUser, async (req, res) => {
 });
 
 app.put("/api/notes/:id", requireUser, async (req, res) => {
-  if (typeof req.body?.content !== "string") {
-    res.status(400).json({ error: "content must be a string" });
+  const version = req.body?.version;
+  if (
+    typeof req.body?.content !== "string" ||
+    typeof version !== "number" ||
+    !Number.isInteger(version)
+  ) {
+    res
+      .status(400)
+      .json({ error: "content must be a string and version an integer" });
     return;
   }
-  const note = await updateNote(
+  const result = await updateNote(
     String(req.params.id),
     req.body.content,
+    version,
     req.user!.email,
   );
-  if (!note) {
+  if (result.status === "not_found") {
     res.status(404).json({ error: "Note not found" });
     return;
   }
-  res.json(note);
+  if (result.status === "conflict") {
+    res.status(409).json(result.note);
+    return;
+  }
+  res.json(result.note);
 });
 
 app.patch("/api/notes/:id", requireUser, async (req, res) => {

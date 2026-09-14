@@ -6,19 +6,20 @@ import {
   useRef,
   useState,
 } from "react";
-import { Globe, Lock } from "lucide-react";
+import { AlertTriangle, Globe, Lock } from "lucide-react";
 import { api, ApiError, type Note } from "./api";
 import {
   clearPendingChange,
   loadPendingChanges,
   mergePendingChanges,
+  type PendingChange,
   savePendingChange,
 } from "./pendingChanges";
 
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor"));
 
 const SAVE_DELAY_MS = 800;
-const OFFLINE_RETRY_MS = 15000;
+const REFRESH_INTERVAL_MS = 15000;
 
 type SaveStatus = "idle" | "saving" | "saved" | "offline" | "error";
 type Pane = "list" | "editor";
@@ -57,10 +58,43 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [pane, setPane] = useState<Pane>("list");
   const [email, setEmail] = useState<string | null>(null);
+  const [conflictedIds, setConflictedIds] = useState<Set<string>>(new Set());
+  const [editorRevision, setEditorRevision] = useState(0);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pending = useRef<Map<string, string>>(new Map());
+  const pending = useRef<Map<string, PendingChange>>(new Map());
   const flushing = useRef(false);
+  const refreshing = useRef(false);
+
+  const notesRef = useRef(notes);
+  const selectedIdRef = useRef(selectedId);
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    notesRef.current = notes;
+    selectedIdRef.current = selectedId;
+    draftRef.current = draft;
+  });
+
+  const bumpRevision = useCallback(() => {
+    setEditorRevision((revision) => revision + 1);
+  }, []);
+
+  const dropConflicted = useCallback((id: string) => {
+    setConflictedIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  const hasActivePending = useCallback(
+    () =>
+      Array.from(pending.current.values()).some(
+        (change) => change.status === "pending",
+      ),
+    [],
+  );
 
   const flush = useCallback(async () => {
     if (timer.current) {
@@ -70,22 +104,33 @@ export default function App() {
     if (flushing.current) return;
     flushing.current = true;
     try {
-      // Keep going until every pending change is either uploaded or the
-      // request fails, so a flaky connection does not block a later edit.
+      // Keep going until every pending change is either uploaded, quarantined
+      // or fails, so a flaky connection does not block a later edit.
       while (pending.current.size > 0) {
         const entries = Array.from(pending.current.entries());
         let progressed = false;
-        for (const [id, content] of entries) {
-          if (pending.current.get(id) !== content) continue;
+        for (const [id, change] of entries) {
+          if (change.status === "conflicted") continue;
+          if (pending.current.get(id) !== change) continue;
           try {
-            const updated = await api.update(id, content);
-            if (pending.current.get(id) === content) {
+            const updated = await api.update(
+              id,
+              change.content,
+              change.baseVersion,
+            );
+            if (pending.current.get(id) === change) {
               pending.current.delete(id);
               clearPendingChange(id);
             }
             setNotes((prev) =>
               prev.map((note) =>
-                note.id === id ? { ...updated, content } : note,
+                note.id === id
+                  ? {
+                      ...updated,
+                      content:
+                        pending.current.get(id)?.content ?? updated.content,
+                    }
+                  : note,
               ),
             );
             progressed = true;
@@ -94,6 +139,35 @@ export default function App() {
             if (error instanceof ApiError && error.status === 404) {
               pending.current.delete(id);
               clearPendingChange(id);
+              setConflictedIds((prev) => {
+                if (!prev.has(id)) return prev;
+                const next = new Set(prev);
+                next.delete(id);
+                return next;
+              });
+              progressed = true;
+            } else if (
+              error instanceof ApiError &&
+              error.status === 409 &&
+              error.body
+            ) {
+              // The server copy moved on. Keep the local edit but never send
+              // it again until the user resolves the conflict explicitly.
+              const server = error.body as Note;
+              if (pending.current.get(id) === change) {
+                change.status = "conflicted";
+                change.server = {
+                  content: server.content,
+                  version: server.version,
+                };
+                savePendingChange(change);
+                setConflictedIds((prev) => new Set(prev).add(id));
+              }
+              setNotes((prev) =>
+                prev.map((note) =>
+                  note.id === id ? { ...note, version: server.version } : note,
+                ),
+              );
               progressed = true;
             }
             // Any other failure leaves the change in `pending` and in local
@@ -105,19 +179,37 @@ export default function App() {
     } finally {
       flushing.current = false;
     }
-    if (pending.current.size === 0) {
-      setStatus("saved");
-    } else {
-      setStatus("offline");
-    }
+    const active = Array.from(pending.current.values()).some(
+      (change) => change.status === "pending",
+    );
+    setStatus(active ? "offline" : "saved");
   }, []);
 
   const scheduleSave = useCallback(
     (id: string, content: string) => {
-      pending.current.set(id, content);
+      const existing = pending.current.get(id);
+      // A quarantined note stays quarantined: keep the latest text locally so
+      // the user can recover it, but do not queue another upload.
+      if (existing?.status === "conflicted") {
+        existing.content = content;
+        savePendingChange(existing);
+        return;
+      }
+      const change: PendingChange = {
+        id,
+        content,
+        baseVersion:
+          existing?.baseVersion ??
+          notesRef.current.find((note) => note.id === id)?.version ??
+          0,
+        status: "pending",
+        server: existing?.server ?? null,
+        savedAt: new Date().toISOString(),
+      };
+      pending.current.set(id, change);
       // Persist before the upload attempt so the edit survives a reload even if
       // the connection is too poor to save it to the server.
-      savePendingChange(id, content);
+      savePendingChange(change);
       setStatus("saving");
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
@@ -126,6 +218,34 @@ export default function App() {
     },
     [flush],
   );
+
+  const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    try {
+      const list = await api.list();
+      const selected = selectedIdRef.current;
+      // Only push remote content into the open editor when the note has no
+      // local edit, otherwise refreshing would stomp what is being typed.
+      if (selected && !pending.current.has(selected)) {
+        const remote = list.find((note) => note.id === selected);
+        if (remote && remote.content !== draftRef.current) {
+          setDraft(remote.content);
+          bumpRevision();
+        }
+      }
+      setNotes(
+        list.map((note) => {
+          const change = pending.current.get(note.id);
+          return change ? { ...note, content: change.content } : note;
+        }),
+      );
+    } catch {
+      // Keep the current state; the next focus or interval retries.
+    } finally {
+      refreshing.current = false;
+    }
+  }, [bumpRevision]);
 
   useEffect(() => {
     let cancelled = false;
@@ -141,7 +261,13 @@ export default function App() {
         if (cancelled) return;
         const stored = loadPendingChanges();
         for (const change of stored) {
-          pending.current.set(change.id, change.content);
+          pending.current.set(change.id, change);
+        }
+        const conflicted = stored.filter(
+          (change) => change.status === "conflicted",
+        );
+        if (conflicted.length > 0) {
+          setConflictedIds(new Set(conflicted.map((change) => change.id)));
         }
         const merged = mergePendingChanges(list, stored);
         setNotes(merged);
@@ -150,7 +276,7 @@ export default function App() {
           setSelectedId(first.id);
           setDraft(first.content);
         }
-        if (stored.length > 0) {
+        if (stored.some((change) => change.status === "pending")) {
           void flush();
         }
       })
@@ -167,15 +293,26 @@ export default function App() {
     function handleOnline() {
       void flush();
     }
+    function handleWake() {
+      if (document.visibilityState !== "visible") return;
+      void flush();
+      void refresh();
+    }
     window.addEventListener("online", handleOnline);
+    window.addEventListener("focus", handleWake);
+    document.addEventListener("visibilitychange", handleWake);
     const retry = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       if (pending.current.size > 0) void flush();
-    }, OFFLINE_RETRY_MS);
+      void refresh();
+    }, REFRESH_INTERVAL_MS);
     return () => {
       window.removeEventListener("online", handleOnline);
+      window.removeEventListener("focus", handleWake);
+      document.removeEventListener("visibilitychange", handleWake);
       window.clearInterval(retry);
     };
-  }, [flush]);
+  }, [flush, refresh]);
 
   useEffect(() => {
     return () => {
@@ -195,13 +332,49 @@ export default function App() {
   }
 
   async function selectNote(id: string) {
-    if (id !== selectedId) {
-      await flush();
+    if (id !== selectedId) await flush();
+
+    const change = pending.current.get(id);
+    let content: string | undefined;
+    let resetEditor = false;
+
+    if (change?.status === "conflicted") {
+      const discard = window.confirm(
+        "This note changed elsewhere. Discard your changes and load the latest?",
+      );
+      if (discard) {
+        try {
+          const latest = await api.get(id);
+          pending.current.delete(id);
+          clearPendingChange(id);
+          dropConflicted(id);
+          setNotes((prev) =>
+            prev.map((note) => (note.id === id ? latest : note)),
+          );
+          content = latest.content;
+          resetEditor = true;
+        } catch {
+          setStatus("error");
+          return;
+        }
+      } else {
+        content = change.content;
+      }
+    } else {
       const note = notes.find((n) => n.id === id);
       if (!note) return;
+      content = note.content;
+    }
+
+    if (id === selectedId) {
+      if (resetEditor) {
+        setDraft(content ?? "");
+        bumpRevision();
+      }
+    } else {
       setSelectedId(id);
-      setDraft(note.content);
-      setStatus(pending.current.size > 0 ? "offline" : "idle");
+      setDraft(content ?? "");
+      setStatus(hasActivePending() ? "offline" : "idle");
     }
     setPane("editor");
   }
@@ -213,7 +386,7 @@ export default function App() {
       setNotes((prev) => [note, ...prev]);
       setSelectedId(note.id);
       setDraft(note.content);
-      setStatus(pending.current.size > 0 ? "offline" : "idle");
+      setStatus(hasActivePending() ? "offline" : "idle");
       setPane("editor");
     } catch {
       setStatus("error");
@@ -225,6 +398,7 @@ export default function App() {
     if (pending.current.has(id)) {
       pending.current.delete(id);
       clearPendingChange(id);
+      dropConflicted(id);
       if (timer.current) clearTimeout(timer.current);
     }
     try {
@@ -239,7 +413,7 @@ export default function App() {
         const first = next[0];
         setSelectedId(first?.id ?? null);
         setDraft(first?.content ?? "");
-        setStatus(pending.current.size > 0 ? "offline" : "idle");
+        setStatus(hasActivePending() ? "offline" : "idle");
         setPane("list");
       }
       return next;
@@ -259,6 +433,8 @@ export default function App() {
   }
 
   const selectedNote = notes.find((note) => note.id === selectedId);
+  const selectedConflicted =
+    selectedId != null && conflictedIds.has(selectedId);
   const canToggle =
     selectedNote != null &&
     (selectedNote.owner === "" || selectedNote.owner === email);
@@ -301,6 +477,13 @@ export default function App() {
                       <Globe
                         size={14}
                         className="flex-none text-slate-400"
+                        aria-hidden="true"
+                      />
+                    )}
+                    {conflictedIds.has(note.id) && (
+                      <AlertTriangle
+                        size={14}
+                        className="flex-none text-amber-500"
                         aria-hidden="true"
                       />
                     )}
@@ -362,18 +545,27 @@ export default function App() {
                 </button>
                 <span
                   className={`text-[0.8125rem] ${
-                    status === "error"
-                      ? "text-red-600"
-                      : status === "offline"
-                        ? "text-amber-600"
-                        : "text-slate-500"
+                    selectedConflicted
+                      ? "text-amber-600"
+                      : status === "error"
+                        ? "text-red-600"
+                        : status === "offline"
+                          ? "text-amber-600"
+                          : "text-slate-500"
                   }`}
                   aria-live="polite"
                 >
-                  {status === "saving" && "Saving…"}
-                  {status === "saved" && "Saved"}
-                  {status === "offline" && "Saved on device"}
-                  {status === "error" && "Save failed"}
+                  {selectedConflicted
+                    ? "Changed elsewhere"
+                    : status === "saving"
+                      ? "Saving…"
+                      : status === "saved"
+                        ? "Saved"
+                        : status === "offline"
+                          ? "Saved on device"
+                          : status === "error"
+                            ? "Save failed"
+                            : ""}
                 </span>
               </div>
             </header>
@@ -384,6 +576,7 @@ export default function App() {
                 noteId={selectedId}
                 initialMarkdown={draft}
                 userEmail={email}
+                revision={editorRevision}
                 onChange={handleChange}
               />
             </Suspense>

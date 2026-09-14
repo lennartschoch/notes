@@ -5,6 +5,7 @@ export interface Note {
   content: string;
   owner: string;
   visibility: Visibility;
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -19,11 +20,13 @@ export interface Sticker {
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly body: unknown;
 
-  constructor(status: number, statusText: string) {
+  constructor(status: number, statusText: string, body: unknown = undefined) {
     super(`Request failed: ${status} ${statusText}`);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -33,7 +36,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    throw new ApiError(res.status, res.statusText);
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch {
+      body = undefined;
+    }
+    throw new ApiError(res.status, res.statusText, body);
   }
   if (res.status === 204) {
     return undefined as T;
@@ -50,10 +59,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content }),
     }),
-  update: (id: string, content: string) =>
+  update: (id: string, content: string, version: number) =>
     request<Note>(`/notes/${id}`, {
       method: "PUT",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, version }),
     }),
   setVisibility: (id: string, visibility: Visibility) =>
     request<Note>(`/notes/${id}`, {
