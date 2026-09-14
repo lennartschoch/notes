@@ -7,6 +7,7 @@ const PRIVATE_NOTE = "Alice private alpha";
 const PUBLIC_NOTE = "Alice public bravo";
 const RAPID_NOTE = "Alice rapid note";
 const ALICE_EDIT = "plus alice edit";
+const BOB_EDIT = "plus bob edit";
 const DEVICE_TWO_EDIT = "device two edit";
 const SAVE_DEBOUNCE_MS = 800;
 
@@ -119,6 +120,26 @@ test("multiplayer note lifecycle", async ({ browser, playwright, baseURL }) => {
       await expect(status(alicePage)).toHaveText("Saved");
 
       await wake(bobPage);
+      await expect(editor(bobPage)).toContainText(ALICE_EDIT);
+    });
+
+    await test.step("persists an edit made by a non-owner of a public note", async () => {
+      await expect(editor(bobPage)).toBeVisible();
+      await appendToNote(bobPage, ` ${BOB_EDIT}`);
+      await expect(status(bobPage)).toHaveText("Saved");
+      await expect(editor(bobPage)).toContainText(BOB_EDIT);
+
+      // A non-owner may edit a public note's content but must not be able to
+      // change sharing, so the visibility control stays disabled.
+      await expect(
+        bobPage.getByRole("button", { name: "Public", exact: true }),
+      ).toBeDisabled();
+
+      // The edit must survive a reload, not be silently dropped as if the note
+      // had been deleted (the non-owner write used to 404 on the server).
+      await bobPage.reload();
+      await noteButton(bobPage, PUBLIC_NOTE).click();
+      await expect(editor(bobPage)).toContainText(BOB_EDIT);
       await expect(editor(bobPage)).toContainText(ALICE_EDIT);
     });
 

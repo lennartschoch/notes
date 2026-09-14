@@ -32,7 +32,17 @@ function canView(note: Note, email: string): boolean {
   );
 }
 
-function canEdit(note: Note, email: string): boolean {
+// Content is collaborative: any authenticated user may edit a note they can
+// view when it is public, and owners (or legacy unowned notes) can always edit.
+function canEditContent(note: Note, email: string): boolean {
+  return (
+    note.visibility === "public" || note.owner === "" || note.owner === email
+  );
+}
+
+// Managing a note — changing its visibility or deleting it — stays with its
+// owner. Public notes are shared for editing, not for ownership changes.
+function canManage(note: Note, email: string): boolean {
   return note.owner === "" || note.owner === email;
 }
 
@@ -107,7 +117,7 @@ export async function updateNote(
   email: string,
 ): Promise<UpdateResult> {
   const note = notes.find((n) => n.id === id);
-  if (!note || !canEdit(note, email)) return { status: "not_found" };
+  if (!note || !canEditContent(note, email)) return { status: "not_found" };
   if (note.version !== version) return { status: "conflict", note };
   // Claim a pre-ownership note for the first user to edit it.
   if (note.owner === "") note.owner = email;
@@ -124,7 +134,7 @@ export async function setNoteVisibility(
   email: string,
 ): Promise<Note | undefined> {
   const note = notes.find((n) => n.id === id);
-  if (!note || !canEdit(note, email)) return undefined;
+  if (!note || !canManage(note, email)) return undefined;
   note.visibility = visibility;
   note.updatedAt = new Date().toISOString();
   await persist();
@@ -133,7 +143,7 @@ export async function setNoteVisibility(
 
 export async function deleteNote(id: string, email: string): Promise<boolean> {
   const index = notes.findIndex((n) => n.id === id);
-  if (index === -1 || !canEdit(notes[index], email)) return false;
+  if (index === -1 || !canManage(notes[index], email)) return false;
   notes.splice(index, 1);
   await persist();
   return true;
