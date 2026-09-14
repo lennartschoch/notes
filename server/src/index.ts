@@ -137,7 +137,10 @@ app.get("/api/stickers/:id/image", requireUser, (req, res) => {
   }
   res.setHeader("Content-Type", sticker.mime);
   res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
-  res.sendFile(stickerImagePath(sticker), (err) => {
+  // The path is built server-side from a UUID inside the configured stickers
+  // directory, so allow dot-prefixed directory segments (e.g. a data dir such
+  // as `.data`); sendFile's default `dotfiles: "ignore"` would 404 them.
+  res.sendFile(stickerImagePath(sticker), { dotfiles: "allow" }, (err) => {
     if (err && !res.headersSent) {
       res.status(404).json({ error: "Sticker image missing" });
     }
