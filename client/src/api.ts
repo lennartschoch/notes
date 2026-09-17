@@ -70,6 +70,17 @@ export const api = {
       body: JSON.stringify({ visibility }),
     }),
   remove: (id: string) => request<void>(`/notes/${id}`, { method: "DELETE" }),
+  pushPublicKey: () => request<{ key: string | null }>("/push/public-key"),
+  registerPushSubscription: (subscription: PushSubscriptionJSON) =>
+    request<void>("/push/subscription", {
+      method: "PUT",
+      body: JSON.stringify(subscription),
+    }),
+  unregisterPushSubscription: (endpoint: string) =>
+    request<void>("/push/subscription", {
+      method: "DELETE",
+      body: JSON.stringify({ endpoint }),
+    }),
   listStickers: () => request<Sticker[]>("/stickers"),
   createSticker: (name: string, mime: string, data: string) =>
     request<Sticker>("/stickers", {

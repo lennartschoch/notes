@@ -89,6 +89,12 @@ export function getNote(id: string, email: string): Note | undefined {
   return note && canView(note, email) ? note : undefined;
 }
 
+// Bypasses the visibility check for system tasks (like notifications) that
+// must see a note regardless of who they are running on behalf of.
+export function peekNote(id: string): Note | undefined {
+  return notes.find((n) => n.id === id);
+}
+
 export async function createNote(content = "", owner: string): Promise<Note> {
   const now = new Date().toISOString();
   const note: Note = {

@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { AlertTriangle, Globe, Lock } from "lucide-react";
+import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
 import { api, ApiError, type Note } from "./api";
 import {
   clearPendingChange,
@@ -15,6 +15,13 @@ import {
   type PendingChange,
   savePendingChange,
 } from "./pendingChanges";
+import {
+  disablePush,
+  enablePush,
+  pushSupported,
+  registerServiceWorker,
+  resyncPushSubscription,
+} from "./push";
 
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor"));
 
@@ -60,6 +67,7 @@ export default function App() {
   const [email, setEmail] = useState<string | null>(null);
   const [conflictedIds, setConflictedIds] = useState<Set<string>>(new Set());
   const [editorRevision, setEditorRevision] = useState(0);
+  const [pushEnabled, setPushEnabled] = useState(false);
 
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pending = useRef<Map<string, PendingChange>>(new Map());
@@ -327,6 +335,29 @@ export default function App() {
     };
   }, [flush]);
 
+  // Bring up the push service worker and re-register any existing browser
+  // subscription so the server-side record tracks the current user.
+  useEffect(() => {
+    if (!pushSupported()) return;
+    let cancelled = false;
+    void registerServiceWorker()
+      .then(() => resyncPushSubscription())
+      .then((active) => {
+        if (!cancelled) setPushEnabled(active);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function togglePush() {
+    if (pushEnabled) {
+      if (await disablePush()) setPushEnabled(false);
+    } else {
+      setPushEnabled(await enablePush());
+    }
+  }
+
   function handleChange(value: string) {
     setDraft(value);
     if (!selectedId) return;
@@ -455,13 +486,33 @@ export default function App() {
       >
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] md:pt-4">
           <h1 className="m-0 text-xl font-semibold">Notes</h1>
-          <button
-            type="button"
-            className="min-h-10 rounded-lg bg-slate-900 px-4 py-2 text-[0.9375rem] font-medium text-white hover:bg-slate-700 active:bg-slate-700"
-            onClick={createNote}
-          >
-            New
-          </button>
+          <div className="flex items-center gap-2">
+            {pushSupported() && (
+              <button
+                type="button"
+                className={`flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 hover:bg-slate-100 active:bg-slate-100 ${
+                  pushEnabled ? "text-slate-900" : "text-slate-500"
+                }`}
+                onClick={() => void togglePush()}
+                aria-pressed={pushEnabled}
+                aria-label="Note update notifications"
+                title={
+                  pushEnabled
+                    ? "You will be notified when a shared note changes"
+                    : "Notify me when a shared note changes"
+                }
+              >
+                {pushEnabled ? <Bell size={18} /> : <BellOff size={18} />}
+              </button>
+            )}
+            <button
+              type="button"
+              className="min-h-10 rounded-lg bg-slate-900 px-4 py-2 text-[0.9375rem] font-medium text-white hover:bg-slate-700 active:bg-slate-700"
+              onClick={createNote}
+            >
+              New
+            </button>
+          </div>
         </header>
 
         {loading ? (
