@@ -4,8 +4,13 @@ import { fileURLToPath } from "node:url";
 import webpush from "web-push";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
+// Follow the notes store onto whatever volume NOTES_DATA_FILE points at
+// (as stickerStore does), so the subscriptions and VAPID keys survive a
+// redeploy without a second path to keep in sync.
+const NOTES_DATA_FILE =
+  process.env.NOTES_DATA_FILE ?? join(currentDir, "..", "data", "notes.json");
 const DATA_FILE =
-  process.env.PUSH_DATA_FILE ?? join(currentDir, "..", "data", "push.json");
+  process.env.PUSH_DATA_FILE ?? join(dirname(NOTES_DATA_FILE), "push.json");
 const DEFAULT_VAPID_SUBJECT = "mailto:notes@localhost";
 
 export interface PushSubscriptionRecord {
