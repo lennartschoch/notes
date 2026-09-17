@@ -38,6 +38,13 @@ export default defineConfig({
       NOTES_DATA_FILE: join(dataDir, "notes.json"),
       STICKERS_DATA_FILE: join(dataDir, "stickers.json"),
       STICKERS_DIR: join(dataDir, "stickers"),
+      PUSH_DATA_FILE: join(dataDir, "push.json"),
+      // Collapse the notification quiet period and cooldown so the push
+      // scheduler can be observed in seconds instead of minutes/hours.
+      PUSH_QUIET_MS: "300",
+      PUSH_COOLDOWN_MS: "3000",
+      // The push test terminates TLS with a throwaway self-signed cert.
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
     },
   },
 });

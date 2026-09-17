@@ -8,6 +8,13 @@ import express, {
   type Response,
 } from "express";
 import { requireUser } from "./auth.js";
+import { initNotifier, noteRemoved, scheduleNoteChange } from "./notifier.js";
+import {
+  getVapid,
+  initPush,
+  removeSubscription,
+  upsertSubscription,
+} from "./pushStore.js";
 import {
   createSticker,
   deleteSticker,
@@ -93,6 +100,11 @@ app.put("/api/notes/:id", requireUser, async (req, res) => {
     res.status(409).json(result.note);
     return;
   }
+  // Edits to a public note notify the other users it is shared with, once
+  // they settle down (see notifier.ts).
+  if (result.note.visibility === "public") {
+    scheduleNoteChange(result.note, req.user!.email);
+  }
   res.json(result.note);
 });
 
@@ -120,6 +132,46 @@ app.delete("/api/notes/:id", requireUser, async (req, res) => {
     res.status(404).json({ error: "Note not found" });
     return;
   }
+  noteRemoved(String(req.params.id));
+  res.status(204).end();
+});
+
+// Browser push: the client subscribes through its service worker and registers
+// the resulting subscription here, keyed to the signed-in user so notifications
+// for a shared note can skip the person who made the edit.
+app.get("/api/push/public-key", requireUser, (_req, res) => {
+  res.json({ key: getVapid()?.publicKey ?? null });
+});
+
+app.put("/api/push/subscription", requireUser, (req, res) => {
+  const endpoint =
+    typeof req.body?.endpoint === "string" ? req.body.endpoint : "";
+  const p256dh =
+    typeof req.body?.keys?.p256dh === "string" ? req.body.keys.p256dh : "";
+  const auth =
+    typeof req.body?.keys?.auth === "string" ? req.body.keys.auth : "";
+  if (
+    !/^https?:\/\//i.test(endpoint) ||
+    p256dh.length === 0 ||
+    auth.length === 0
+  ) {
+    res
+      .status(400)
+      .json({ error: "endpoint, keys.p256dh and keys.auth are required" });
+    return;
+  }
+  void upsertSubscription(req.user!.email, endpoint, p256dh, auth);
+  res.status(204).end();
+});
+
+app.delete("/api/push/subscription", requireUser, (req, res) => {
+  const endpoint =
+    typeof req.body?.endpoint === "string" ? req.body.endpoint : "";
+  if (endpoint.length === 0) {
+    res.status(400).json({ error: "endpoint is required" });
+    return;
+  }
+  void removeSubscription(endpoint);
   res.status(204).end();
 });
 
@@ -195,6 +247,8 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 
 await init();
 await initStickers();
+await initPush();
+initNotifier();
 app.listen(PORT, () => {
   console.log(`Notes API listening on http://localhost:${PORT}`);
 });
