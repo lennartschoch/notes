@@ -77,6 +77,24 @@ must resolve to one.
   token, set it to pin the mapping to one token. Without `MCP_AGENT_EMAIL`,
   service tokens get a `401`.
 
+- **An agent on the app's own network.** A container that talks to this one
+  directly never passes through Access, so it has no JWT to present — and an
+  Access service-token JWT expires, which makes it a poor thing to bake into a
+  long-lived deployment. For that case a long-lived shared secret maps to the
+  same account:
+
+  ```env
+  MCP_AGENT_EMAIL=agent@example.com   # the only identity the secret can be
+  MCP_SERVICE_TOKEN=<long random>     # openssl rand -hex 32
+  ```
+
+  Send it as `Authorization: Bearer <MCP_SERVICE_TOKEN>`. It is compared in
+  constant time, resolves to exactly the one account the operator named (never
+  to an address the caller chooses), and is refused outright unless
+  `MCP_AGENT_EMAIL` is set — with a `503`, because that combination is a
+  misconfiguration rather than a bad credential. Requests arriving at a
+  hostname served through Access cannot use it: Access challenges them first.
+
 - **Local development (`NODE_ENV !== production`).** No credential means the
   app's dev identity is used; send `x-dev-user-email: someone@example.com` to
   act as a specific user, which is how the e2e suite drives two identities.
@@ -134,8 +152,9 @@ when a note goes stale.
 | `MCP_MAX_SESSIONS`     | `25`      | Concurrent sessions before `initialize` gets a `503` |
 | `MCP_IDLE_TIMEOUT_MS`  | `1800000` | Close sessions that have been quiet for this long    |
 | `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                        |
-| `MCP_AGENT_EMAIL`      | unset     | Account a service token acts as                      |
+| `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                 |
 | `MCP_SERVICE_TOKEN_ID` | unset     | Service token `common_name` that mapping accepts     |
+| `MCP_SERVICE_TOKEN`    | unset     | Bearer secret for an agent on the app's own network  |
 
 Sessions are in memory: restarting the server drops them and clients re-run the
 `initialize` handshake. Sessions whose client disappears are closed by the idle
