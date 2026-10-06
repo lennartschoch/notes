@@ -45,6 +45,11 @@ export default defineConfig({
       PUSH_COOLDOWN_MS: "3000",
       // The push test terminates TLS with a throwaway self-signed cert.
       NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      // The credential an agent on the app's own network presents instead of a
+      // Cloudflare Access JWT (see server/src/mcp/auth.ts). The values are
+      // repeated in e2e/mcp.spec.ts.
+      MCP_SERVICE_TOKEN: "e2e-agent-secret",
+      MCP_AGENT_EMAIL: "agent.mcp@test",
     },
   },
 });

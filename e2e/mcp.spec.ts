@@ -16,17 +16,26 @@ const MCP_URL = `http://127.0.0.1:${port}/mcp`;
 const ALICE = "alice.mcp@test";
 const BOB = "bob.mcp@test";
 
+// MCP_AGENT_EMAIL and MCP_SERVICE_TOKEN as playwright.config.ts runs the server:
+// the single account the shared secret opens, and the secret itself.
+const AGENT = "agent.mcp@test";
+const SECRET = "e2e-agent-secret";
+
 // Makes every note this suite looks for findable even when other suites have
 // created similar ones.
 const run = `${Date.now()}`;
 
-async function connectAs(email: string): Promise<Client> {
+async function connect(headers: Record<string, string> = {}): Promise<Client> {
   const client = new Client({ name: "e2e-mcp", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
-    requestInit: { headers: { "x-dev-user-email": email } },
+    requestInit: { headers },
   });
   await client.connect(transport);
   return client;
+}
+
+async function connectAs(email: string): Promise<Client> {
+  return connect({ "x-dev-user-email": email });
 }
 
 async function call(
@@ -289,5 +298,48 @@ test.describe("MCP server", () => {
 
     const health = await (request as APIRequestContext).get("/api/health");
     expect(health.ok()).toBe(true);
+  });
+
+  test("a shared secret opens the endpoint as one fixed account", async ({
+    request,
+  }) => {
+    // No Access JWT and no dev header: this is an agent on the app's own
+    // network, which is what the secret exists for.
+    const agent = await connect({ authorization: `Bearer ${SECRET}` });
+    try {
+      expect(out(await call(agent, "whoami"))).toContain(AGENT);
+
+      const created = await call(agent, "create_note", {
+        content: `written by the agent ${run}`,
+      });
+      const id = noteId(out(created));
+
+      // The note belongs to the account the operator mapped the secret to, and
+      // to nobody else - a secret cannot name an identity the way the dev
+      // header does.
+      const asAgent = await request.get("/api/notes", {
+        headers: { "x-dev-user-email": AGENT },
+      });
+      expect(JSON.stringify(await asAgent.json())).toContain(
+        `written by the agent ${run}`,
+      );
+
+      const asAlice = await request.get("/api/notes", {
+        headers: { "x-dev-user-email": ALICE },
+      });
+      expect(JSON.stringify(await asAlice.json())).not.toContain(
+        `written by the agent ${run}`,
+      );
+
+      await call(agent, "delete_note", { id });
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("refuses a shared secret that is not the configured one", async () => {
+    await expect(
+      connect({ authorization: "Bearer obviously-not-the-secret" }),
+    ).rejects.toThrow();
   });
 });
