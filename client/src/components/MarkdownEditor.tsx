@@ -9,6 +9,7 @@ import { api, type Sticker as StickerData } from "../api";
 import { EditorToolbar } from "./EditorToolbar";
 import { Sticker } from "./sticker";
 import {
+  DEFAULT_TODO_NAME,
   isTodoMarkdown,
   reconcileTodoMarkdown,
   startTodoMarkdown,
@@ -176,7 +177,11 @@ function MarkdownEditor({
 
   function launchTodoList() {
     if (!editor) return;
-    const markdown = startTodoMarkdown(editor.getMarkdown(), todoDate());
+    // The name is asked for once, up front, because the title is the only place
+    // this app has to keep one.
+    const name = window.prompt("Name this to-do list", DEFAULT_TODO_NAME);
+    if (name === null) return;
+    const markdown = startTodoMarkdown(editor.getMarkdown(), name);
     editor.commands.setContent(markdown, {
       contentType: "markdown",
       emitUpdate: false,
