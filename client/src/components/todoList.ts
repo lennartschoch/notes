@@ -178,7 +178,11 @@ function serialize(doc: TodoDoc): string {
     });
   }
 
-  return output.join("\n").replace(/\s+$/, "");
+  // Only newlines are trimmed: a task marker needs the space after its closing
+  // bracket, and dropping it turns `- [ ] ` back into a bullet whose text is a
+  // literal `[]`. Trailing spaces inside the note are left alone for the same
+  // reason.
+  return output.join("\n").replace(/\n+$/, "");
 }
 
 /** One blank item, so a list with nothing in it still has something to type. */
