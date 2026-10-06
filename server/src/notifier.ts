@@ -7,6 +7,7 @@ import {
   removeSubscription,
   saveNoteNotifyState,
 } from "./pushStore.js";
+import { noteTitle } from "./noteText.js";
 import { peekNote } from "./store.js";
 import type { Note } from "./types.js";
 
@@ -40,15 +41,6 @@ function snapshot(state: LiveState) {
     editors: [...state.editors],
     title: state.title,
   };
-}
-
-function noteTitle(content: string): string {
-  const firstLine = content.split("\n").find((line) => line.trim().length > 0);
-  const title = (firstLine ?? "")
-    .replace(/\[sticker\b[^\]]*\]/gi, "")
-    .replace(/^\s{0,3}#{1,6}\s+/, "")
-    .trim();
-  return title.slice(0, 60) || "Untitled note";
 }
 
 // Re-arms the timers for changes that were pending when the server stopped.

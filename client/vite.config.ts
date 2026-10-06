@@ -16,6 +16,12 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": "http://localhost:4000",
+      // The MCP endpoint for AI agents; SSE streaming needs to stay open.
+      "/mcp": {
+        target: "http://localhost:4000",
+        proxyTimeout: 0,
+        timeout: 0,
+      },
     },
   },
 });

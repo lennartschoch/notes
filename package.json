@@ -20,6 +20,7 @@
     "test:e2e:headed": "playwright test --headed"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@playwright/test": "^1.63.0",
     "concurrently": "^10.0.5",
     "oxfmt": "^0.67.0",

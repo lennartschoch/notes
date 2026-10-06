@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 const TEAM_DOMAIN = (
   process.env.CF_ACCESS_TEAM_DOMAIN ?? "lennartschoch.cloudflareaccess.com"
@@ -21,6 +21,22 @@ declare global {
   }
 }
 
+// Verifies an Access JWT against the team's JWKS and returns its claims, or
+// undefined when the token is not valid for this app.
+export async function verifyAccessToken(
+  token: string,
+): Promise<JWTPayload | undefined> {
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: ISSUER,
+      audience: AUDIENCE,
+    });
+    return payload;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function requireUser(
   req: Request,
   res: Response,
@@ -29,18 +45,13 @@ export async function requireUser(
   const token = req.header("cf-access-jwt-assertion");
 
   if (token) {
-    try {
-      const { payload } = await jwtVerify(token, JWKS, {
-        issuer: ISSUER,
-        audience: AUDIENCE,
-      });
+    const payload = await verifyAccessToken(token);
+    if (payload) {
       if (typeof payload.email === "string" && payload.email.length > 0) {
         req.user = { email: payload.email.trim().toLowerCase() };
         next();
         return;
       }
-    } catch {
-      // Invalid token: reject below.
     }
     res.status(401).json({ error: "Invalid Cloudflare Access token" });
     return;

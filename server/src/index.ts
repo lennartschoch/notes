@@ -9,6 +9,7 @@ import express, {
 } from "express";
 import { requireUser } from "./auth.js";
 import { initNotifier, noteRemoved, scheduleNoteChange } from "./notifier.js";
+import { mountMcp } from "./mcp/http.js";
 import {
   getVapid,
   initPush,
@@ -39,6 +40,9 @@ const PORT = Number(process.env.PORT ?? 4000);
 
 const app = express();
 app.use(cors());
+// MCP endpoint for AI agents (see MCP.md). Mounted before the body parsers so
+// the streamable-HTTP transport reads its own JSON-RPC bodies.
+mountMcp(app);
 // Sticker uploads carry a base64-encoded image, so they need a larger body
 // limit than note edits. Mounting this parser first means the smaller global
 // parser below sees the body is already read and skips it.
