@@ -1,12 +1,19 @@
 import { Placeholder } from "@tiptap/extensions";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Markdown } from "@tiptap/markdown";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
+import type { Node } from "@tiptap/pm/model";
 import { useEffect, useRef, useState } from "react";
 import { api, type Sticker as StickerData } from "../api";
 import { EditorToolbar } from "./EditorToolbar";
 import { Sticker } from "./sticker";
+import {
+  isTodoMarkdown,
+  reconcileTodoMarkdown,
+  startTodoMarkdown,
+  todoDate,
+} from "./todoList";
 import { StickerPicker } from "./StickerPicker";
 import { StickerUploadDialog } from "./StickerUploadDialog";
 
@@ -18,6 +25,59 @@ const extensions = [
   Sticker,
   Placeholder.configure({ placeholder: "Start typing…" }),
 ];
+
+// How much text is used to find the caret again after a markdown rewrite.
+const CARET_ANCHOR_CHARS = 24;
+
+// Every character in the document with the position it sits at, so a caret can
+// be relocated in a document that was rebuilt from markdown.
+function textMap(doc: Node): { text: string; positions: number[] } {
+  let text = "";
+  const positions: number[] = [];
+  doc.descendants((node, position) => {
+    if (!node.isText || !node.text) return;
+    for (let offset = 0; offset < node.text.length; offset += 1) {
+      text += node.text[offset];
+      positions.push(position + offset);
+    }
+  });
+  return { text, positions };
+}
+
+function caretAnchor(doc: Node, caret: number): string {
+  const { text, positions } = textMap(doc);
+  let end = positions.findIndex((position) => position >= caret);
+  if (end === -1) end = positions.length;
+  return text.slice(Math.max(0, end - CARET_ANCHOR_CHARS), end);
+}
+
+function positionOfText(doc: Node, anchor: string): number | null {
+  if (anchor.trim() === "") return null;
+  const { text, positions } = textMap(doc);
+  const index = text.indexOf(anchor);
+  if (index === -1) return null;
+  return (
+    positions[index + anchor.length] ?? positions[positions.length - 1] ?? null
+  );
+}
+
+// Swap the whole document for rewritten markdown. That throws the caret away,
+// so it is put back after the same text it was sitting behind, and the caller
+// is told the note changed because the rewrite replaced a normal edit.
+function replaceMarkdown(
+  editor: Editor,
+  markdown: string,
+  onChange: (markdown: string) => void,
+) {
+  const anchor = caretAnchor(editor.state.doc, editor.state.selection.from);
+  editor.commands.setContent(markdown, {
+    contentType: "markdown",
+    emitUpdate: false,
+  });
+  const position = positionOfText(editor.state.doc, anchor);
+  if (position !== null) editor.commands.setTextSelection(position);
+  onChange(markdown);
+}
 
 interface MarkdownEditorProps {
   noteId: string;
@@ -66,12 +126,23 @@ function MarkdownEditor({
     initialMarkdownRef.current = initialMarkdown;
   });
 
+  // The button is a one-shot: once the note is a to-do list, ticking and typing
+  // keep it one, so the launch control is spent.
+  const showTodoLaunch = !isTodoMarkdown(initialMarkdown);
+
   const editor = useEditor({
     extensions,
     content: initialMarkdown,
     contentType: "markdown",
     onUpdate: ({ editor: current }) => {
-      onChangeRef.current(current.getMarkdown());
+      const markdown = current.getMarkdown();
+      // Ticking an item files it under today, which rewrites the note.
+      const filed = reconcileTodoMarkdown(markdown, todoDate());
+      if (filed !== null) {
+        replaceMarkdown(current, filed, onChangeRef.current);
+        return;
+      }
+      onChangeRef.current(markdown);
     },
     editorProps: {
       attributes: {
@@ -102,6 +173,17 @@ function MarkdownEditor({
       emitUpdate: false,
     });
   }, [editor, revision]);
+
+  function launchTodoList() {
+    if (!editor) return;
+    const markdown = startTodoMarkdown(editor.getMarkdown(), todoDate());
+    editor.commands.setContent(markdown, {
+      contentType: "markdown",
+      emitUpdate: false,
+    });
+    editor.commands.focus("end");
+    onChangeRef.current(markdown);
+  }
 
   function insertSticker(sticker: StickerData) {
     editor
@@ -143,6 +225,8 @@ function MarkdownEditor({
           editor={editor}
           stickerPickerOpen={pickerOpen}
           onToggleStickerPicker={() => setPickerOpen((open) => !open)}
+          showTodoLaunch={showTodoLaunch}
+          onStartTodoList={launchTodoList}
         />
         {pickerOpen && (
           <StickerPicker

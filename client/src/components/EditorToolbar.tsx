@@ -9,6 +9,7 @@ import {
   List,
   ListChecks,
   ListOrdered,
+  ListTodo,
   Quote,
   Redo2,
   SquareCode,
@@ -22,6 +23,9 @@ interface EditorToolbarProps {
   editor: Editor;
   stickerPickerOpen: boolean;
   onToggleStickerPicker: () => void;
+  /** Hidden once the note is already a to-do list. */
+  showTodoLaunch: boolean;
+  onStartTodoList: () => void;
 }
 
 interface ToolbarButtonProps {
@@ -61,6 +65,8 @@ export function EditorToolbar({
   editor,
   stickerPickerOpen,
   onToggleStickerPicker,
+  showTodoLaunch,
+  onStartTodoList,
 }: EditorToolbarProps) {
   const state = useEditorState({
     editor,
@@ -173,6 +179,11 @@ export function EditorToolbar({
       >
         <ListChecks size={20} />
       </ToolbarButton>
+      {showTodoLaunch && (
+        <ToolbarButton label="To-do list" onClick={onStartTodoList}>
+          <ListTodo size={20} />
+        </ToolbarButton>
+      )}
       <ToolbarButton
         label="Quote"
         active={state.blockquote}
