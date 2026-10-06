@@ -2,7 +2,7 @@
 //
 // A to-do note is plain markdown with one shape:
 //
-//   # Todo · 2026-07-08
+//   # Todo · Groceries
 //
 //   - [ ] water the plants
 //
@@ -10,18 +10,29 @@
 //
 //   - [x] renew passport
 //
-// The level-1 heading is the title, and it always names the day the list is
-// being worked on. Everything under it is still open. The level-2 headings
-// below it, newest day first, archive the items that were ticked on that day.
+// Three things are split across that shape, and keeping them apart is what the
+// module is about:
 //
-// Ticking an item therefore files it: it leaves the open list, joins the day it
-// was ticked on, and the title moves ahead to that day. Unticking an archived
-// item reopens it and takes it back out of the day it was filed under.
+//   marker   the `Todo` word in the level-1 heading opts the note in, and is
+//            the only thing that makes a note a to-do list
+//   name     whatever follows `Todo · ` belongs to the user; nothing here
+//            writes to it, so a list can be renamed without breaking it
+//   days     the level-2 headings, newest first, each holding the items that
+//            were ticked on that day
+//
+// The day the list is being worked on is deliberately not stored: it is
+// whatever the clock says when something is ticked, and the newest day heading
+// below the title is where it lands. Ticking an item therefore leaves the name
+// alone and files the item under today; unticking an archived item takes it
+// back out of the day it was filed under.
 //
 // Everything here is pure string work on the markdown the editor serialises, so
 // the rules of the list can be reasoned about without a live editor.
 
-const TITLE_RE = /^#\s+Todo\s*·\s*(\d{4}-\d{2}-\d{2})\s*$/;
+/** Title of a list that was launched without a name. */
+export const DEFAULT_TODO_NAME = "My to-dos";
+
+const TITLE_RE = /^#\s+Todo\s*(?:·\s*(.*))?$/;
 const DAY_RE = /^##\s+(\d{4}-\d{2}-\d{2})$/;
 const TASK_RE = /^([-*+]|\d+\.)\s+\[([ xX])\]/;
 const LIST_PREFIX_RE = /^\s*(?:[-*+]|\d+\.)\s+(?:\[[ xX]\]\s*)?/;
@@ -33,8 +44,13 @@ export function todoDate(date = new Date()): string {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-export function todoHeading(date: string): string {
-  return `# Todo · ${date}`;
+/** The user's name for the list, read out of its title line. */
+function nameOf(titleLine: string): string {
+  return (titleLine.trim().match(TITLE_RE)?.[1] ?? "").trim();
+}
+
+export function todoHeading(name: string): string {
+  return name === "" ? "# Todo" : `# Todo · ${name}`;
 }
 
 export function isTodoMarkdown(markdown: string): boolean {
@@ -76,14 +92,22 @@ interface Section {
 }
 
 interface TodoDoc {
+  /** The user's name for the list; null when the note has not opted in. */
+  name: string | null;
   open: Section;
   days: Section[];
 }
 
-function parseTodo(markdown: string): TodoDoc | null {
+const byDateDesc = (a: Section, b: Section) => (a.date! < b.date! ? 1 : -1);
+
+/**
+ * Read a note as a to-do list whether or not it is one: without a title, the
+ * whole note is the open list and `name` comes back null.
+ */
+function parseBody(markdown: string): TodoDoc {
   const lines = markdown.split("\n");
   const titleAt = lines.findIndex((line) => TITLE_RE.test(line.trim()));
-  if (titleAt === -1) return null;
+  const name = titleAt === -1 ? null : nameOf(lines[titleAt]);
 
   const open: Section = { date: null, blocks: [] };
   const days: Section[] = [];
@@ -126,11 +150,16 @@ function parseTodo(markdown: string): TodoDoc | null {
   }
   flush();
 
-  return { open, days };
+  return { name, open, days };
 }
 
-function serialize(doc: TodoDoc, title: string): string {
-  const output: string[] = [todoHeading(title)];
+function parseTodo(markdown: string): TodoDoc | null {
+  const doc = parseBody(markdown);
+  return doc.name === null ? null : doc;
+}
+
+function serialize(doc: TodoDoc): string {
+  const output: string[] = [todoHeading(doc.name ?? "")];
 
   const push = (lines: string[], blankBefore: boolean) => {
     const last = output[output.length - 1];
@@ -152,28 +181,48 @@ function serialize(doc: TodoDoc, title: string): string {
   return output.join("\n").replace(/\s+$/, "");
 }
 
-/**
- * Turn a note into a to-do list dated `today`. Existing lines become the open
- * items; a note that is already a to-do list is returned untouched.
- */
-export function startTodoMarkdown(markdown: string, today: string): string {
-  if (isTodoMarkdown(markdown)) return markdown;
+/** One blank item, so a list with nothing in it still has something to type. */
+const EMPTY_ITEM = "- [ ] ";
 
-  const items = markdown
-    .split("\n")
+/**
+ * Every line of a block becomes an open item, stripped of whatever list marker
+ * it arrived with.
+ */
+function toItems(block: Block): Block[] {
+  return block.lines
     .map((line) => line.replace(LIST_PREFIX_RE, "").trim())
     .filter((line) => line.length > 0)
-    .map((line) => `- [ ] ${line}`);
+    .map((line, index) => ({
+      lines: [`- [ ] ${line}`],
+      blankBefore: index === 0 ? block.blankBefore : false,
+    }));
+}
 
-  const body = items.length > 0 ? items.join("\n") : "- [ ] ";
-  return `${todoHeading(today)}\n\n${body}\n`;
+/**
+ * Turn a note into a to-do list named `name`. The lines on top become the open
+ * items and any days the note already archives are kept, so a note that lost
+ * its title can be launched again without losing its history. A note that is
+ * already a to-do list is returned untouched.
+ */
+export function startTodoMarkdown(markdown: string, name: string): string {
+  const doc = parseBody(markdown);
+  if (doc.name !== null) return markdown;
+
+  doc.open.blocks = doc.open.blocks.flatMap(toItems);
+  if (doc.open.blocks.length === 0) {
+    doc.open.blocks.push({ lines: [EMPTY_ITEM], blankBefore: true });
+  }
+  doc.days.sort(byDateDesc);
+  doc.name = name.trim();
+
+  return serialize(doc);
 }
 
 /**
  * File every ticked item under the day it was ticked on and return the
- * rewritten note, or null when there is nothing to file. Reopened items return
- * to the open list, and the title follows whichever way the newest tick went,
- * so the title always names the day something last happened to the list.
+ * rewritten note, or null when there is nothing to file. Reopened items go back
+ * to the open list. The name in the title is never touched, so a list can be
+ * renamed at any time without disturbing the rules around it.
  */
 export function reconcileTodoMarkdown(
   markdown: string,
@@ -212,10 +261,8 @@ export function reconcileTodoMarkdown(
     section.blocks.push(...filed.map(tight));
   }
 
-  doc.days.sort((a, b) => (a.date! < b.date! ? 1 : -1));
-  // The title is the day the list last moved, so it never lags behind today.
-  const newest = doc.days[0]?.date ?? today;
+  doc.days.sort(byDateDesc);
 
-  const next = serialize(doc, newest > today ? newest : today);
+  const next = serialize(doc);
   return next === markdown ? null : next;
 }

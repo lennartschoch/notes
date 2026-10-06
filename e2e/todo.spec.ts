@@ -1,7 +1,7 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
-// The list is dated with the local day, so the spec writes the same headings
-// the app does rather than parsing them back out.
+// The days a list files items under are local ISO dates, so the spec writes the
+// same headings the app does rather than parsing them back out.
 function isoDate(date: Date): string {
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
   const day = `${date.getDate()}`.padStart(2, "0");
@@ -29,6 +29,10 @@ function openCheckboxes(page: Page) {
   return editor(page).locator('input[type="checkbox"]:not(:checked)');
 }
 
+function todoButton(page: Page) {
+  return page.getByRole("button", { name: "To-do list" });
+}
+
 function noteButton(page: Page, text: string) {
   return page
     .locator("li")
@@ -38,23 +42,18 @@ function noteButton(page: Page, text: string) {
     .first();
 }
 
+// Launching asks for the list's name once.
+async function launch(page: Page, name: string | null) {
+  page.once("dialog", (dialog) =>
+    name === null ? dialog.dismiss() : dialog.accept(name),
+  );
+  await todoButton(page).click();
+}
+
 async function contentOf(context: BrowserContext, id: string): Promise<string> {
   const response = await context.request.get(`/api/notes/${id}`);
   expect(response.ok()).toBe(true);
   return String((await response.json()).content);
-}
-
-// Creates a note straight on the server, for a list that has to start on a day
-// other than today.
-async function seedNote(
-  context: BrowserContext,
-  content: string,
-): Promise<string> {
-  const response = await context.request.post("/api/notes", {
-    data: { content },
-  });
-  expect(response.ok()).toBe(true);
-  return String((await response.json()).id);
 }
 
 // The saved markdown of the note this spec is working on, found by a phrase
@@ -68,6 +67,19 @@ async function savedContent(
   return notes.find((note) => note.content.includes(needle))?.content ?? "";
 }
 
+// Creates a note straight on the server, for a list that has to start with a
+// history or on a day other than today.
+async function seedNote(
+  context: BrowserContext,
+  content: string,
+): Promise<string> {
+  const response = await context.request.post("/api/notes", {
+    data: { content },
+  });
+  expect(response.ok()).toBe(true);
+  return String((await response.json()).id);
+}
+
 async function openNote(context: BrowserContext, text: string): Promise<Page> {
   const page = await context.newPage();
   await page.goto("/");
@@ -76,31 +88,44 @@ async function openNote(context: BrowserContext, text: string): Promise<Page> {
   return page;
 }
 
-test("launches a to-do list from a note with one click", async ({
-  browser,
-}) => {
+test("launches a named to-do list with one click", async ({ browser }) => {
   const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
   const page = await context.newPage();
   await page.goto("/");
   await page.getByRole("button", { name: "New" }).click();
   await editor(page).click();
-  await page.keyboard.insertText(`todo launch ${run}\nmilk\nbread`);
+  await page.keyboard.insertText(`milk ${run}\nbread`);
 
-  await page.getByRole("button", { name: "To-do list" }).click();
+  await launch(page, `Launch ${run}`);
 
-  await expect(editor(page).locator("h1")).toHaveText(`Todo · ${TODAY}`);
-  await expect(checkboxes(page)).toHaveCount(3);
+  await expect(editor(page).locator("h1")).toHaveText(`Todo · Launch ${run}`);
+  await expect(checkboxes(page)).toHaveCount(2);
 
   // A note that is already a list no longer offers to become one.
-  await expect(page.getByRole("button", { name: "To-do list" })).toHaveCount(0);
+  await expect(todoButton(page)).toHaveCount(0);
 
-  const launched = `todo launch ${run}`;
   await expect
-    .poll(() => savedContent(context, launched), { timeout: 10_000 })
-    .toContain(`# Todo · ${TODAY}`);
-  const content = await savedContent(context, launched);
+    .poll(() => savedContent(context, `milk ${run}`), { timeout: 10_000 })
+    .toContain(`# Todo · Launch ${run}`);
+  const content = await savedContent(context, `milk ${run}`);
   expect(content).toContain("- [ ] milk");
   expect(content).toContain("- [ ] bread");
+
+  await context.close();
+});
+
+test("cancelling the name leaves the note alone", async ({ browser }) => {
+  const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
+  const page = await context.newPage();
+  await page.goto("/");
+  await page.getByRole("button", { name: "New" }).click();
+  await editor(page).click();
+  await page.keyboard.insertText(`plain ${run}`);
+
+  await launch(page, null);
+
+  await expect(editor(page).locator("h1")).toHaveCount(0);
+  await expect(todoButton(page)).toBeVisible();
 
   await context.close();
 });
@@ -111,15 +136,15 @@ test("ticking an item files it under the day it was ticked", async ({
   const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
   const id = await seedNote(
     context,
-    `# Todo · ${PAST}\n\n- [ ] file taxes ${run}\n- [ ] water plants\n`,
+    `# Todo · Chores ${run}\n\n- [ ] file taxes\n- [ ] water plants\n`,
   );
-  const page = await openNote(context, `Todo · ${PAST}`);
+  const page = await openNote(context, `Chores ${run}`);
   await expect(checkboxes(page)).toHaveCount(2);
 
   await checkboxes(page).first().click();
 
-  // The title moves ahead to the day the tick happened, and the item joins it.
-  await expect(editor(page).locator("h1")).toHaveText(`Todo · ${TODAY}`);
+  // The item joins the day it was ticked on; the name of the list is its own.
+  await expect(editor(page).locator("h1")).toHaveText(`Todo · Chores ${run}`);
   await expect(editor(page).locator("h2")).toHaveText(TODAY);
   await expect(openCheckboxes(page)).toHaveCount(1);
   await expect(checkboxes(page).last()).toBeChecked();
@@ -132,8 +157,7 @@ test("ticking an item files it under the day it was ticked", async ({
     content.indexOf(`## ${TODAY}`),
   );
 
-  // Unticking takes it out of the day and back into the open list, which then
-  // has the only thing left to do.
+  // Unticking takes it out of the day and back into the open list.
   await checkboxes(page).last().click();
   await expect(editor(page).locator("h2")).toHaveCount(0);
   await expect(openCheckboxes(page)).toHaveCount(2);
@@ -142,20 +166,41 @@ test("ticking an item files it under the day it was ticked", async ({
   await context.close();
 });
 
+test("renaming a list keeps it a to-do list", async ({ browser }) => {
+  const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
+  await seedNote(
+    context,
+    `# Todo · My to-dos ${run}\n\n- [ ] hang the pictures\n`,
+  );
+  const page = await openNote(context, `My to-dos ${run}`);
+
+  const title = editor(page).locator("h1");
+  await title.click();
+  await page.keyboard.press("End");
+  await page.keyboard.insertText(", upstairs");
+  await expect(title).toHaveText(`Todo · My to-dos ${run}, upstairs`);
+  await expect(todoButton(page)).toHaveCount(0);
+
+  await checkboxes(page).first().click();
+  await expect(editor(page).locator("h2")).toHaveText(TODAY);
+  await expect(checkboxes(page).last()).toBeChecked();
+
+  await context.close();
+});
+
 test("keeps previous days listed newest first", async ({ browser }) => {
   const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
   await seedNote(
     context,
-    `# Todo · ${PAST}\n\n- [ ] order frames ${run}\n\n` +
+    `# Todo · House ${run}\n\n- [ ] order frames\n\n` +
       `## ${PAST}\n\n- [x] clear the desk\n\n` +
       `## ${OLDER}\n\n- [x] book the dentist\n`,
   );
-  const page = await openNote(context, `order frames ${run}`);
+  const page = await openNote(context, `House ${run}`);
   await expect(editor(page).locator("h2")).toHaveText([PAST, OLDER]);
 
   await checkboxes(page).first().click();
 
-  await expect(editor(page).locator("h1")).toHaveText(`Todo · ${TODAY}`);
   await expect(editor(page).locator("h2")).toHaveText([TODAY, PAST, OLDER]);
   await expect(
     editor(page).getByText("clear the desk", { exact: true }),
