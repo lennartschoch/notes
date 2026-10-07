@@ -1,13 +1,21 @@
 // Service worker for browser push notifications. The server sends a JSON
 // payload ({ title, body, tag }); clicking a notification focuses the app.
 self.addEventListener("push", (event) => {
+  // PushMessageData bodies are single-read, so the text is read once and
+  // parsed by hand: calling event.data.text() after event.data.json() has
+  // consumed (and failed on) the stream would itself throw.
+  const raw = event.data ? event.data.text() : "";
   let payload = {};
   try {
-    payload = event.data ? event.data.json() : {};
+    payload = raw ? JSON.parse(raw) : {};
   } catch {
-    payload = { title: "Note updated", body: event.data.text() };
+    payload = { body: raw };
   }
-  const { title = "Note updated", body = "", tag = "note-update" } = payload;
+  const {
+    title = "Note updated",
+    body = "",
+    tag = "note-update",
+  } = payload ?? {};
   event.waitUntil(self.registration.showNotification(title, { body, tag }));
 });
 
