@@ -1,4 +1,4 @@
-import { notePreview, noteTitle } from "../noteText.js";
+import { notePreview, noteTitle } from "shared";
 import type { Note } from "../types.js";
 
 // Plain-text rendering of notes for tool and resource output. Notes are

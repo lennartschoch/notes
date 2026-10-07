@@ -7,7 +7,7 @@ import {
   removeSubscription,
   saveNoteNotifyState,
 } from "./pushStore.js";
-import { noteTitle } from "./noteText.js";
+import { noteTitle } from "shared";
 import { peekNote } from "./store.js";
 import type { Note } from "./types.js";
 

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
+import { noteTitle } from "shared";
 import { api, ApiError, type Note } from "./api";
 import {
   clearPendingChange,
@@ -40,12 +41,8 @@ function stripMarkdown(line: string): string {
     .trim();
 }
 
-function titleFor(content: string): string {
-  const firstLine = content.split("\n").find((line) => line.trim().length > 0);
-  const title = firstLine ? stripMarkdown(firstLine) : "";
-  return title.slice(0, 60) || "Untitled note";
-}
-
+// Sidebar preview: the body under the title line. The title itself comes
+// from shared/noteText so it matches push notifications and MCP output.
 function previewFor(content: string): string {
   const rest = content
     .split("\n")
@@ -544,7 +541,7 @@ export default function App() {
                         aria-hidden="true"
                       />
                     )}
-                    <span className="truncate">{titleFor(note.content)}</span>
+                    <span className="truncate">{noteTitle(note.content)}</span>
                   </span>
                   <span className="truncate text-sm text-slate-500">
                     {previewFor(note.content)}

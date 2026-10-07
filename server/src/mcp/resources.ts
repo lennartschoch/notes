@@ -4,7 +4,7 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { getNote, listNotes } from "../store.js";
-import { noteTitle } from "../noteText.js";
+import { noteTitle } from "shared";
 import { fullNote, listLines } from "./format.js";
 
 // Notes are also exposed as resources, so a client can attach a note (or the
