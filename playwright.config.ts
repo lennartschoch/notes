@@ -34,6 +34,9 @@ export default defineConfig({
     timeout: 120_000,
     env: {
       NODE_ENV: "test",
+      // The identity-header fallback is opt-in in the app (see server/src/auth.ts);
+      // the suite drives distinct users through x-dev-user-email.
+      DEV_USERS: "1",
       PORT: String(port),
       NOTES_DATA_FILE: join(dataDir, "notes.json"),
       PUSH_DATA_FILE: join(dataDir, "push.json"),

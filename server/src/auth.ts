@@ -13,6 +13,19 @@ const AUDIENCE =
 const ISSUER = `https://${TEAM_DOMAIN}`;
 const JWKS = createRemoteJWKSet(new URL(`${ISSUER}/cdn-cgi/access/certs`));
 
+// The defaults above are this deployment's own team. A production process
+// that did not set them is verifying tokens against somebody's Access, so
+// say so loudly at boot instead of failing mysteriously at first login.
+if (
+  process.env.NODE_ENV === "production" &&
+  (!process.env.CF_ACCESS_TEAM_DOMAIN || !process.env.CF_ACCESS_AUD)
+) {
+  console.warn(
+    "Warning: running in production with the built-in Cloudflare Access team domain/audience. " +
+      "Set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD to your own values.",
+  );
+}
+
 declare global {
   namespace Express {
     interface Request {
@@ -57,10 +70,12 @@ export async function requireUser(
     return;
   }
 
-  // Outside production, allow an explicit dev/test identity via header so
-  // end-to-end tests can drive two distinct users against one server. Cloudflare
-  // Access is the only identity source in production, where this is disabled.
-  if (process.env.NODE_ENV !== "production") {
+  // An explicit dev/test identity via header lets end-to-end tests drive two
+  // distinct users against one server. It is opt-in (DEV_USERS=1) rather than
+  // "anything but production", so a deployment that forgets to set NODE_ENV
+  // fails closed: without the flag, Cloudflare Access is the only identity
+  // source and a missing header is a hard 401.
+  if (process.env.DEV_USERS === "1") {
     const devEmail = req.header("x-dev-user-email")?.trim().toLowerCase();
     req.user = {
       email: devEmail || process.env.DEV_USER_EMAIL || "dev@localhost",

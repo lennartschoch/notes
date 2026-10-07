@@ -80,7 +80,8 @@ export async function requireMcpUser(
   const token = accessAssertion(req);
 
   // No Access token at all: fall back to the app's rules, which is the
-  // x-dev-user-email header outside production and a hard 401 inside it.
+  // x-dev-user-email header only while DEV_USERS=1 and a hard 401 everywhere
+  // else.
   if (token.length === 0) {
     await requireUser(req, res, next);
     return;
