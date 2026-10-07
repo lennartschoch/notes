@@ -17,15 +17,6 @@ import {
   upsertSubscription,
 } from "./pushStore.js";
 import {
-  createSticker,
-  deleteSticker,
-  getSticker,
-  initStickers,
-  listStickers,
-  STICKER_MIME_EXTENSIONS,
-  stickerImagePath,
-} from "./stickerStore.js";
-import {
   createNote,
   deleteNote,
   getNote,
@@ -43,10 +34,6 @@ app.use(cors());
 // MCP endpoint for AI agents (see MCP.md). Mounted before the body parsers so
 // the streamable-HTTP transport reads its own JSON-RPC bodies.
 mountMcp(app);
-// Sticker uploads carry a base64-encoded image, so they need a larger body
-// limit than note edits. Mounting this parser first means the smaller global
-// parser below sees the body is already read and skips it.
-app.use("/api/stickers", express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => {
@@ -179,57 +166,6 @@ app.delete("/api/push/subscription", requireUser, (req, res) => {
   res.status(204).end();
 });
 
-// Stickers are a shared library: every authenticated user can list, use and
-// embed every sticker. Only the uploader can delete one.
-app.get("/api/stickers", requireUser, (_req, res) => {
-  res.json(listStickers());
-});
-
-app.get("/api/stickers/:id/image", requireUser, (req, res) => {
-  const sticker = getSticker(String(req.params.id));
-  if (!sticker) {
-    res.status(404).json({ error: "Sticker not found" });
-    return;
-  }
-  res.setHeader("Content-Type", sticker.mime);
-  res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
-  // The path is built server-side from a UUID inside the configured stickers
-  // directory, so allow dot-prefixed directory segments (e.g. a data dir such
-  // as `.data`); sendFile's default `dotfiles: "ignore"` would 404 them.
-  res.sendFile(stickerImagePath(sticker), { dotfiles: "allow" }, (err) => {
-    if (err && !res.headersSent) {
-      res.status(404).json({ error: "Sticker image missing" });
-    }
-  });
-});
-
-app.post("/api/stickers", requireUser, async (req, res) => {
-  const name = typeof req.body?.name === "string" ? req.body.name : "";
-  const mime = typeof req.body?.mime === "string" ? req.body.mime : "";
-  const data = typeof req.body?.data === "string" ? req.body.data : "";
-  if (!Object.hasOwn(STICKER_MIME_EXTENSIONS, mime)) {
-    res.status(400).json({ error: "Unsupported image type" });
-    return;
-  }
-  // Accept either a bare base64 payload or a full data URL.
-  const base64 = data.includes(",") ? data.slice(data.indexOf(",") + 1) : data;
-  if (base64.length === 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
-    res.status(400).json({ error: "data must be base64-encoded image bytes" });
-    return;
-  }
-  const sticker = await createSticker(name, mime, base64, req.user!.email);
-  res.status(201).json(sticker);
-});
-
-app.delete("/api/stickers/:id", requireUser, async (req, res) => {
-  const removed = await deleteSticker(String(req.params.id), req.user!.email);
-  if (!removed) {
-    res.status(404).json({ error: "Sticker not found" });
-    return;
-  }
-  res.status(204).end();
-});
-
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
@@ -250,7 +186,6 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 await init();
-await initStickers();
 await initPush();
 initNotifier();
 app.listen(PORT, () => {

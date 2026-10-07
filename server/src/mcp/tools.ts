@@ -13,7 +13,6 @@ import {
   setNoteVisibility,
   updateNote,
 } from "../store.js";
-import { listStickers } from "../stickerStore.js";
 import type { Note, Visibility } from "../types.js";
 
 // Every tool answers with plain text: notes are markdown documents, and an
@@ -263,9 +262,7 @@ export function registerTools(server: McpServer, email: string): void {
         content: z
           .string()
           .optional()
-          .describe(
-            'Markdown content. Stickers are inserted as [sticker id="…" name="…"] shortcodes (see list_stickers).',
-          ),
+          .describe("Markdown content for the new note."),
         title: z
           .string()
           .optional()
@@ -487,30 +484,6 @@ export function registerTools(server: McpServer, email: string): void {
       noteRemoved(id);
       noteChanged(id);
       return ok(`Deleted note "${noteTitle(note.content)}" (${id}).`);
-    },
-  );
-
-  server.registerTool(
-    "list_stickers",
-    {
-      title: "List stickers",
-      description:
-        'List the shared sticker library. Embed one in a note as [sticker id="…" name="…"] and it renders as an image in the web app.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true },
-    },
-    async (): Promise<ToolOutput> => {
-      const stickers = listStickers();
-      if (stickers.length === 0) return ok("The sticker library is empty.");
-      return ok(
-        [
-          `${stickers.length} sticker(s) in the shared library. Embed with: [sticker id="ID" name="NAME"]`,
-          "",
-          ...stickers.map(
-            (sticker) => `- ${sticker.name || "unnamed"} · id ${sticker.id}`,
-          ),
-        ].join("\n"),
-      );
     },
   );
 }

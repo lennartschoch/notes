@@ -1,23 +1,15 @@
 // Text helpers shared by the push notifier and the MCP tools, so a note is
 // titled and previewed the same way everywhere it is listed.
 
-// The editor serialises stickers as self-closing shortcodes such as
-// [sticker id="…" name="…"]; they carry no readable text.
-const STICKER_SHORTCODE = /\[sticker\b[^\]]*\]/gi;
-
 export function noteTitle(content: string): string {
   const firstLine = content.split("\n").find((line) => line.trim().length > 0);
-  const title = (firstLine ?? "")
-    .replace(STICKER_SHORTCODE, "")
-    .replace(/^\s{0,3}#{1,6}\s+/, "")
-    .trim();
+  const title = (firstLine ?? "").replace(/^\s{0,3}#{1,6}\s+/, "").trim();
   return title.slice(0, 60) || "Untitled note";
 }
 
 // Drop markdown decoration so a list of notes reads like a list of sentences.
 function stripMarkdown(content: string): string {
   return content
-    .replace(STICKER_SHORTCODE, "")
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`[^`]*`/g, "")
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")

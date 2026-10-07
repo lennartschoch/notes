@@ -9,11 +9,3 @@ export interface Note {
   createdAt: string;
   updatedAt: string;
 }
-
-export interface Sticker {
-  id: string;
-  name: string;
-  mime: string;
-  owner: string;
-  createdAt: string;
-}

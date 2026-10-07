@@ -72,7 +72,6 @@ test.describe("MCP server", () => {
           "replace_in_note",
           "set_note_visibility",
           "delete_note",
-          "list_stickers",
         ]),
       );
 
