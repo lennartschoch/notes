@@ -32,7 +32,9 @@ needed by clients that only speak stdio):
         "mcp-remote",
         "https://notes.example.com/mcp",
         "--header",
-        "Authorization: Bearer ${NOTES_MCP_TOKEN}"
+        "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}",
+        "--header",
+        "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
       ]
     }
   }
@@ -48,7 +50,10 @@ pi, …) take the URL directly plus whatever header their auth needs:
     "notes": {
       "type": "http",
       "url": "https://notes.example.com/mcp",
-      "headers": { "Authorization": "Bearer ${NOTES_MCP_TOKEN}" }
+      "headers": {
+        "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
+        "CF-Access-Client-Secret": "${CF_ACCESS_CLIENT_SECRET}"
+      }
     }
   }
 }
@@ -60,40 +65,42 @@ The MCP endpoint uses the app's identity, so an agent can only ever see and
 change what that identity can. Notes are owned by an email address, so an agent
 must resolve to one.
 
-- **Behind Cloudflare Access (production).** Requests carry a verified Access
-  JWT, either in the `cf-access-jwt-assertion` header Access sets, or in
+- **Behind Cloudflare Access (production).** Every request carries a verified
+  Access JWT, either in the `cf-access-jwt-assertion` header Access sets, or in
   `Authorization: Bearer <jwt>` for clients that cannot set that header. The
   token's `email` claim becomes the acting user.
-- **Headless agents with a service token.** A Cloudflare Access _service token_
-  proves a machine is talking but carries no email, so it is refused unless you
-  explicitly map it to an account:
+- **Agents: a Cloudflare Access service token.** This is the one supported
+  machine credential, and it is Cloudflare's, not ours. In the Zero Trust
+  dashboard, create a service token and add it to the Access policy for the
+  notes hostname with the **Service Auth** rule — without that rule Access
+  answers the agent with a login page instead of forwarding the request. Then
+  send both headers to `https://<your-notes-host>/mcp`:
 
-  ```env
-  MCP_AGENT_EMAIL=agent@example.com    # the account a service token acts as
-  MCP_SERVICE_TOKEN_ID=my-agent-token  # service token common_name to accept
+  ```
+  CF-Access-Client-Id: <client id>
+  CF-Access-Client-Secret: <client secret>
   ```
 
-  `MCP_SERVICE_TOKEN_ID` is optional; leave it unset to accept any service
-  token, set it to pin the mapping to one token. Without `MCP_AGENT_EMAIL`,
-  service tokens get a `401`.
-
-- **An agent on the app's own network.** A container that talks to this one
-  directly never passes through Access, so it has no JWT to present — and an
-  Access service-token JWT expires, which makes it a poor thing to bake into a
-  long-lived deployment. For that case a long-lived shared secret maps to the
-  same account:
+  Access validates them and stamps the request with an application token, so
+  the agent never handles a JWT and this app never stores a secret. The minted
+  token identifies itself by `common_name` (the Client ID) and carries **no
+  email** — while every note is owned by an email — so the pairing has to be
+  named here:
 
   ```env
-  MCP_AGENT_EMAIL=agent@example.com   # the only identity the secret can be
-  MCP_SERVICE_TOKEN=<long random>     # openssl rand -hex 32
+  MCP_AGENT_EMAIL=agent@example.com                 # account to act as
+  MCP_SERVICE_TOKEN_ID=<client id>                  # the token allowed to be it
   ```
 
-  Send it as `Authorization: Bearer <MCP_SERVICE_TOKEN>`. It is compared in
-  constant time, resolves to exactly the one account the operator named (never
-  to an address the caller chooses), and is refused outright unless
-  `MCP_AGENT_EMAIL` is set — with a `503`, because that combination is a
-  misconfiguration rather than a bad credential. Requests arriving at a
-  hostname served through Access cannot use it: Access challenges them first.
+  Both are required, and that is the point: an unpinned `common_name` would
+  mean "any service token this organization issues may be this account", which
+  widens by itself the day a second token is created. Nothing is granted while
+  either is unset — a service token then gets a `401`.
+
+  Two consequences worth knowing. The agent reaches the app the way any client
+  does, through Access, so it is usable from wherever the agent runs and needs
+  no second credential when the app moves host — and, the same coin, agent
+  access goes down with Cloudflare, not with the local network.
 
 - **Local development (`NODE_ENV !== production`).** No credential means the
   app's dev identity is used; send `x-dev-user-email: someone@example.com` to
@@ -153,8 +160,7 @@ when a note goes stale.
 | `MCP_IDLE_TIMEOUT_MS`  | `1800000` | Close sessions that have been quiet for this long    |
 | `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                        |
 | `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                 |
-| `MCP_SERVICE_TOKEN_ID` | unset     | Service token `common_name` that mapping accepts     |
-| `MCP_SERVICE_TOKEN`    | unset     | Bearer secret for an agent on the app's own network  |
+| `MCP_SERVICE_TOKEN_ID` | unset     | Service token Client ID the mapping accepts          |
 
 Sessions are in memory: restarting the server drops them and clients re-run the
 `initialize` handshake. Sessions whose client disappears are closed by the idle
