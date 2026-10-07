@@ -3,18 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "workspaces": [
+    "shared",
     "server",
     "client"
   ],
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
-    "build": "npm run build -w server && npm run build -w client",
+    "dev": "npm run build -w shared && concurrently -n server,client -c blue,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
     "start": "npm run start -w server",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "typecheck": "npm run build -w shared && npm run typecheck -w server && npm run typecheck -w client",
     "check": "npm run lint && npm run format:check && npm run typecheck",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed"

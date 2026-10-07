@@ -1,7 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { noteTitle, searchContent } from "../noteText.js";
-import type { SearchResults } from "../noteText.js";
+import { noteTitle, searchContent, type SearchResults } from "shared";
 import { fullNote, listLines, metaLine, stamp } from "./format.js";
 import {
   createNote,

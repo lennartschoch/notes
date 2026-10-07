@@ -28,7 +28,8 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "npm run build -w client && npm run start:e2e -w server",
+    command:
+      "npm run build -w shared && npm run build -w client && npm run start:e2e -w server",
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,

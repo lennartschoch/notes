@@ -1,5 +1,7 @@
-// Text helpers shared by the push notifier and the MCP tools, so a note is
-// titled and previewed the same way everywhere it is listed.
+// Text helpers shared by the server (push notifier, MCP tools) and the web
+// client, so a note is titled the same way everywhere it is listed. This is
+// the whole point of this workspace: import from "shared" rather than
+// re-implementing a title heuristic next to the component that needs it.
 
 export function noteTitle(content: string): string {
   const firstLine = content.split("\n").find((line) => line.trim().length > 0);

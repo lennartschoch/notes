@@ -15,11 +15,12 @@ WORKDIR /app
 # Manifests (and the workspace stubs) first, so `npm ci` caches until
 # dependencies actually change, independent of source edits.
 COPY package.json package-lock.json ./
+COPY shared/package.json ./shared/package.json
 COPY server/package.json ./server/package.json
 COPY client/package.json ./client/package.json
 RUN npm ci
 
-# Source, then the workspace build: server (tsc) + client (vite build).
+# Source, then the workspace build: shared + server (tsc) + client (vite build).
 COPY . .
 RUN npm run build
 
@@ -32,11 +33,15 @@ WORKDIR /app
 # Production dependencies only (express, cors; the client deps come along but
 # are unused at runtime). Dev tooling is not in this image.
 COPY package.json package-lock.json ./
+COPY shared/package.json ./shared/package.json
 COPY server/package.json ./server/package.json
 COPY client/package.json ./client/package.json
 RUN npm ci --omit=dev && npm cache clean --force
 
-# Only the built artefacts are carried over from the builder.
+# Only the built artefacts are carried over from the builder. The server
+# imports the "shared" workspace by name, so its compiled output has to be
+# next to the node_modules symlink npm ci created for it.
+COPY --from=build /app/shared/dist ./shared/dist
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/client/dist ./client/dist
 
