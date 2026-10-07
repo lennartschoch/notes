@@ -10,14 +10,6 @@ export interface Note {
   updatedAt: string;
 }
 
-export interface Sticker {
-  id: string;
-  name: string;
-  mime: string;
-  owner: string;
-  createdAt: string;
-}
-
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -81,16 +73,4 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify({ endpoint }),
     }),
-  listStickers: () => request<Sticker[]>("/stickers"),
-  createSticker: (name: string, mime: string, data: string) =>
-    request<Sticker>("/stickers", {
-      method: "POST",
-      body: JSON.stringify({ name, mime, data }),
-    }),
-  removeSticker: (id: string) =>
-    request<void>(`/stickers/${id}`, { method: "DELETE" }),
 };
-
-export function stickerImageUrl(id: string): string {
-  return `/api/stickers/${id}/image`;
-}

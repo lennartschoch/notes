@@ -15,7 +15,6 @@ Working with notes:
 - Every write bumps a version. Writes that carry the version you read fail if the note changed in the meantime and return the current text, so a concurrent edit is never silently overwritten. Omit the version only when writing against whatever is newest is acceptable.
 - Prefer append_to_note and replace_in_note for local changes; update_note replaces the whole document.
 - delete_note is permanent and cannot be undone. Prefer set_note_visibility to private unless deletion was explicitly requested.
-- Stickers from list_stickers are embedded as [sticker id="…" name="…"].
 
 Notes are also exposed as resources (notes://index and note://{id}) for clients that attach context instead of calling tools.`;
 

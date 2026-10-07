@@ -13,7 +13,6 @@ import {
   Quote,
   Redo2,
   SquareCode,
-  Sticker as StickerIcon,
   Strikethrough,
   Undo2,
 } from "lucide-react";
@@ -21,8 +20,6 @@ import type { ReactNode } from "react";
 
 interface EditorToolbarProps {
   editor: Editor;
-  stickerPickerOpen: boolean;
-  onToggleStickerPicker: () => void;
   /** Hidden once the note is already a to-do list. */
   showTodoLaunch: boolean;
   onStartTodoList: () => void;
@@ -63,8 +60,6 @@ function ToolbarButton({
 
 export function EditorToolbar({
   editor,
-  stickerPickerOpen,
-  onToggleStickerPicker,
   showTodoLaunch,
   onStartTodoList,
 }: EditorToolbarProps) {
@@ -200,13 +195,6 @@ export function EditorToolbar({
       </ToolbarButton>
       <ToolbarButton label="Link" active={state.link} onClick={editLink}>
         <Link2 size={20} />
-      </ToolbarButton>
-      <ToolbarButton
-        label="Sticker"
-        active={stickerPickerOpen}
-        onClick={onToggleStickerPicker}
-      >
-        <StickerIcon size={20} />
       </ToolbarButton>
 
       <span

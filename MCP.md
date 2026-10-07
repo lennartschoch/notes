@@ -120,14 +120,12 @@ must resolve to one.
 | `replace_in_note`     | Find/replace inside a note, single match unless `all` is set                       |
 | `set_note_visibility` | Private ↔ public (owner only)                                                      |
 | `delete_note`         | Delete permanently (owner only)                                                    |
-| `list_stickers`       | The shared sticker library                                                         |
 
 Permissions are the app's, enforced per call: everyone who can see a note may
 edit it, only the owner may change visibility or delete it. Editing a public
 note fires the same browser-push notifications a web edit does.
 
-Notes are markdown, and stickers are inline shortcodes that round-trip through
-the editor: `[sticker id="…" name="…"]`.
+Notes are markdown, the same documents the web editor writes.
 
 ## Versions, not overwrites
 
