@@ -16,11 +16,6 @@ const MCP_URL = `http://127.0.0.1:${port}/mcp`;
 const ALICE = "alice.mcp@test";
 const BOB = "bob.mcp@test";
 
-// MCP_AGENT_EMAIL and MCP_SERVICE_TOKEN as playwright.config.ts runs the server:
-// the single account the shared secret opens, and the secret itself.
-const AGENT = "agent.mcp@test";
-const SECRET = "e2e-agent-secret";
-
 // Makes every note this suite looks for findable even when other suites have
 // created similar ones.
 const run = `${Date.now()}`;
@@ -300,46 +295,38 @@ test.describe("MCP server", () => {
     expect(health.ok()).toBe(true);
   });
 
-  test("a shared secret opens the endpoint as one fixed account", async ({
-    request,
-  }) => {
-    // No Access JWT and no dev header: this is an agent on the app's own
-    // network, which is what the secret exists for.
-    const agent = await connect({ authorization: `Bearer ${SECRET}` });
-    try {
-      expect(out(await call(agent, "whoami"))).toContain(AGENT);
-
-      const created = await call(agent, "create_note", {
-        content: `written by the agent ${run}`,
-      });
-      const id = noteId(out(created));
-
-      // The note belongs to the account the operator mapped the secret to, and
-      // to nobody else - a secret cannot name an identity the way the dev
-      // header does.
-      const asAgent = await request.get("/api/notes", {
-        headers: { "x-dev-user-email": AGENT },
-      });
-      expect(JSON.stringify(await asAgent.json())).toContain(
-        `written by the agent ${run}`,
-      );
-
-      const asAlice = await request.get("/api/notes", {
-        headers: { "x-dev-user-email": ALICE },
-      });
-      expect(JSON.stringify(await asAlice.json())).not.toContain(
-        `written by the agent ${run}`,
-      );
-
-      await call(agent, "delete_note", { id });
-    } finally {
-      await agent.close();
-    }
+  test("verifies an Authorization bearer token rather than trusting it", async () => {
+    // The header is an alternative spelling of the Access application token, so
+    // it has to clear the same signature check - and having sent one rules out
+    // the dev identity fallback, which is what makes this a 401 and not a
+    // session.
+    await expect(
+      connect({ authorization: "Bearer not-a-cloudflare-access-token" }),
+    ).rejects.toThrow();
   });
 
-  test("refuses a shared secret that is not the configured one", async () => {
+  test("refuses an Access-shaped token that Cloudflare did not sign", async () => {
+    // Header, issuer and audience all look plausible; only the signature is
+    // Cloudflare's to provide.
+    const unsigned = [
+      Buffer.from(
+        JSON.stringify({ alg: "RS256", kid: "deadbeef", typ: "JWT" }),
+      ).toString("base64url"),
+      Buffer.from(
+        JSON.stringify({
+          iss: "https://lennartschoch.cloudflareaccess.com",
+          aud: [
+            "679c3d2a2a09ca7734cc9280a435035173c65e68ff08067e4665d216f75a563e",
+          ],
+          email: ALICE,
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        }),
+      ).toString("base64url"),
+      "signature-nobody-signed",
+    ].join(".");
+
     await expect(
-      connect({ authorization: "Bearer obviously-not-the-secret" }),
+      connect({ "cf-access-jwt-assertion": unsigned }),
     ).rejects.toThrow();
   });
 });
