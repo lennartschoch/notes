@@ -3,19 +3,15 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
 import { noteTitle } from "shared";
-import { api, ApiError, type Note } from "./api";
-import {
-  clearPendingChange,
-  loadPendingChanges,
-  mergePendingChanges,
-  type PendingChange,
-  savePendingChange,
-} from "./pendingChanges";
+import { api, type Note } from "./api";
+import { mergePendingChanges } from "./pendingChanges";
+import { createSyncQueue } from "./syncQueue";
 import {
   disablePush,
   enablePush,
@@ -26,7 +22,6 @@ import {
 
 const MarkdownEditor = lazy(() => import("./components/MarkdownEditor"));
 
-const SAVE_DELAY_MS = 800;
 const REFRESH_INTERVAL_MS = 15000;
 
 type SaveStatus = "idle" | "saving" | "saved" | "offline" | "error";
@@ -65,9 +60,6 @@ export default function App() {
   const [editorRevision, setEditorRevision] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
 
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pending = useRef<Map<string, PendingChange>>(new Map());
-  const flushing = useRef(false);
   const refreshing = useRef(false);
 
   const notesRef = useRef(notes);
@@ -92,142 +84,32 @@ export default function App() {
     });
   }, []);
 
-  const hasActivePending = useCallback(
+  // The offline sync engine. Its events only call stable setters, so it is
+  // created once and survives every re-render.
+  const queue = useMemo(
     () =>
-      Array.from(pending.current.values()).some(
-        (change) => change.status === "pending",
-      ),
+      createSyncQueue({
+        saved: (note, displayContent) =>
+          setNotes((prev) =>
+            prev.map((n) =>
+              n.id === note.id ? { ...note, content: displayContent } : n,
+            ),
+          ),
+        conflicted: (id) => setConflictedIds((prev) => new Set(prev).add(id)),
+        noteVersion: (id, version) =>
+          setNotes((prev) =>
+            prev.map((n) => (n.id === id ? { ...n, version } : n)),
+          ),
+        gone: (id) =>
+          setConflictedIds((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          }),
+        status: (syncStatus) => setStatus(syncStatus),
+      }),
     [],
-  );
-
-  const flush = useCallback(async () => {
-    if (timer.current) {
-      clearTimeout(timer.current);
-      timer.current = null;
-    }
-    if (flushing.current) return;
-    flushing.current = true;
-    try {
-      // Keep going until every pending change is either uploaded, quarantined
-      // or fails, so a flaky connection does not block a later edit.
-      while (pending.current.size > 0) {
-        const entries = Array.from(pending.current.entries());
-        let progressed = false;
-        for (const [id, change] of entries) {
-          if (change.status === "conflicted") continue;
-          if (pending.current.get(id) !== change) continue;
-          try {
-            const updated = await api.update(
-              id,
-              change.content,
-              change.baseVersion,
-            );
-            const queued = pending.current.get(id);
-            if (queued === change) {
-              pending.current.delete(id);
-              clearPendingChange(id);
-            } else if (queued && queued.status === "pending") {
-              // A newer edit was queued while this save was in flight and
-              // captured the pre-save version. Rebase it onto the version just
-              // written, otherwise its own save would falsely conflict.
-              queued.baseVersion = updated.version;
-              savePendingChange(queued);
-            }
-            setNotes((prev) =>
-              prev.map((note) =>
-                note.id === id
-                  ? {
-                      ...updated,
-                      content:
-                        pending.current.get(id)?.content ?? updated.content,
-                    }
-                  : note,
-              ),
-            );
-            progressed = true;
-          } catch (error) {
-            // The note was deleted elsewhere, so there is nothing to sync.
-            if (error instanceof ApiError && error.status === 404) {
-              pending.current.delete(id);
-              clearPendingChange(id);
-              setConflictedIds((prev) => {
-                if (!prev.has(id)) return prev;
-                const next = new Set(prev);
-                next.delete(id);
-                return next;
-              });
-              progressed = true;
-            } else if (
-              error instanceof ApiError &&
-              error.status === 409 &&
-              error.body
-            ) {
-              // The server copy moved on. Keep the local edit but never send
-              // it again until the user resolves the conflict explicitly.
-              const server = error.body as Note;
-              if (pending.current.get(id) === change) {
-                change.status = "conflicted";
-                change.server = {
-                  content: server.content,
-                  version: server.version,
-                };
-                savePendingChange(change);
-                setConflictedIds((prev) => new Set(prev).add(id));
-              }
-              setNotes((prev) =>
-                prev.map((note) =>
-                  note.id === id ? { ...note, version: server.version } : note,
-                ),
-              );
-              progressed = true;
-            }
-            // Any other failure leaves the change in `pending` and in local
-            // storage so it is retried when the connection recovers.
-          }
-        }
-        if (!progressed) break;
-      }
-    } finally {
-      flushing.current = false;
-    }
-    const active = Array.from(pending.current.values()).some(
-      (change) => change.status === "pending",
-    );
-    setStatus(active ? "offline" : "saved");
-  }, []);
-
-  const scheduleSave = useCallback(
-    (id: string, content: string) => {
-      const existing = pending.current.get(id);
-      // A quarantined note stays quarantined: keep the latest text locally so
-      // the user can recover it, but do not queue another upload.
-      if (existing?.status === "conflicted") {
-        existing.content = content;
-        savePendingChange(existing);
-        return;
-      }
-      const change: PendingChange = {
-        id,
-        content,
-        baseVersion:
-          existing?.baseVersion ??
-          notesRef.current.find((note) => note.id === id)?.version ??
-          0,
-        status: "pending",
-        server: existing?.server ?? null,
-        savedAt: new Date().toISOString(),
-      };
-      pending.current.set(id, change);
-      // Persist before the upload attempt so the edit survives a reload even if
-      // the connection is too poor to save it to the server.
-      savePendingChange(change);
-      setStatus("saving");
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => {
-        void flush();
-      }, SAVE_DELAY_MS);
-    },
-    [flush],
   );
 
   const refresh = useCallback(async () => {
@@ -238,7 +120,7 @@ export default function App() {
       const selected = selectedIdRef.current;
       // Only push remote content into the open editor when the note has no
       // local edit, otherwise refreshing would stomp what is being typed.
-      if (selected && !pending.current.has(selected)) {
+      if (selected && !queue.has(selected)) {
         const remote = list.find((note) => note.id === selected);
         if (remote && remote.content !== draftRef.current) {
           setDraft(remote.content);
@@ -247,7 +129,7 @@ export default function App() {
       }
       setNotes(
         list.map((note) => {
-          const change = pending.current.get(note.id);
+          const change = queue.get(note.id);
           return change ? { ...note, content: change.content } : note;
         }),
       );
@@ -256,7 +138,7 @@ export default function App() {
     } finally {
       refreshing.current = false;
     }
-  }, [bumpRevision]);
+  }, [bumpRevision, queue]);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,10 +152,7 @@ export default function App() {
       .list()
       .then((list) => {
         if (cancelled) return;
-        const stored = loadPendingChanges();
-        for (const change of stored) {
-          pending.current.set(change.id, change);
-        }
+        const stored = queue.restore();
         const conflicted = stored.filter(
           (change) => change.status === "conflicted",
         );
@@ -288,7 +167,7 @@ export default function App() {
           setDraft(first.content);
         }
         if (stored.some((change) => change.status === "pending")) {
-          void flush();
+          void queue.flush();
         }
       })
       .catch(() => setStatus("error"))
@@ -298,15 +177,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [flush]);
+  }, [queue]);
 
   useEffect(() => {
     function handleOnline() {
-      void flush();
+      void queue.flush();
     }
     function handleWake() {
       if (document.visibilityState !== "visible") return;
-      void flush();
+      void queue.flush();
       void refresh();
     }
     window.addEventListener("online", handleOnline);
@@ -314,7 +193,7 @@ export default function App() {
     document.addEventListener("visibilitychange", handleWake);
     const retry = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      if (pending.current.size > 0) void flush();
+      if (queue.hasActive()) void queue.flush();
       void refresh();
     }, REFRESH_INTERVAL_MS);
     return () => {
@@ -323,13 +202,13 @@ export default function App() {
       document.removeEventListener("visibilitychange", handleWake);
       window.clearInterval(retry);
     };
-  }, [flush, refresh]);
+  }, [queue, refresh]);
 
   useEffect(() => {
     return () => {
-      void flush();
+      void queue.flush();
     };
-  }, [flush]);
+  }, [queue]);
 
   // Bring up the push service worker and re-register any existing browser
   // subscription so the server-side record tracks the current user.
@@ -362,13 +241,17 @@ export default function App() {
         note.id === selectedId ? { ...note, content: value } : note,
       ),
     );
-    scheduleSave(selectedId, value);
+    queue.schedule(
+      selectedId,
+      value,
+      notesRef.current.find((note) => note.id === selectedId)?.version ?? 0,
+    );
   }
 
   async function selectNote(id: string) {
-    if (id !== selectedId) await flush();
+    if (id !== selectedId) await queue.flush();
 
-    const change = pending.current.get(id);
+    const change = queue.get(id);
     let content: string | undefined;
     let resetEditor = false;
 
@@ -379,8 +262,7 @@ export default function App() {
       if (discard) {
         try {
           const latest = await api.get(id);
-          pending.current.delete(id);
-          clearPendingChange(id);
+          queue.drop(id);
           dropConflicted(id);
           setNotes((prev) =>
             prev.map((note) => (note.id === id ? latest : note)),
@@ -408,19 +290,19 @@ export default function App() {
     } else {
       setSelectedId(id);
       setDraft(content ?? "");
-      setStatus(hasActivePending() ? "offline" : "idle");
+      setStatus(queue.hasActive() ? "offline" : "idle");
     }
     setPane("editor");
   }
 
   async function createNote() {
-    await flush();
+    await queue.flush();
     try {
       const note = await api.create("");
       setNotes((prev) => [note, ...prev]);
       setSelectedId(note.id);
       setDraft(note.content);
-      setStatus(hasActivePending() ? "offline" : "idle");
+      setStatus(queue.hasActive() ? "offline" : "idle");
       setPane("editor");
     } catch {
       setStatus("error");
@@ -429,12 +311,8 @@ export default function App() {
 
   async function removeNote(id: string) {
     if (!window.confirm("Delete this note?")) return;
-    if (pending.current.has(id)) {
-      pending.current.delete(id);
-      clearPendingChange(id);
-      dropConflicted(id);
-      if (timer.current) clearTimeout(timer.current);
-    }
+    queue.drop(id);
+    dropConflicted(id);
     try {
       await api.remove(id);
     } catch {
@@ -449,7 +327,7 @@ export default function App() {
       const first = next[0];
       setSelectedId(first?.id ?? null);
       setDraft(first?.content ?? "");
-      setStatus(hasActivePending() ? "offline" : "idle");
+      setStatus(queue.hasActive() ? "offline" : "idle");
       setPane("list");
     }
     setNotes(next);
