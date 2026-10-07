@@ -3,16 +3,13 @@ import { z } from "zod";
 import { noteTitle, searchContent } from "../noteText.js";
 import type { SearchResults } from "../noteText.js";
 import { fullNote, listLines, metaLine, stamp } from "./format.js";
-import { noteRemoved, scheduleNoteChange } from "../notifier.js";
-import { noteChanged } from "./hub.js";
 import {
   createNote,
   deleteNote,
-  getNote,
-  listNotes,
   setNoteVisibility,
   updateNote,
-} from "../store.js";
+} from "../changes.js";
+import { getNote, listNotes } from "../store.js";
 import type { Note, Visibility } from "../types.js";
 
 // Every tool answers with plain text: notes are markdown documents, and an
@@ -74,12 +71,6 @@ async function writeContent(
   if (result.status === "conflict") {
     return conflictNote(result.note, expected);
   }
-  // Same side effect as a web edit: shared notes notify the other people
-  // they are shared with.
-  if (result.note.visibility === "public") {
-    scheduleNoteChange(result.note, email);
-  }
-  noteChanged(note.id);
   return ok(
     `Saved note "${noteTitle(result.note.content)}" (${note.id}) → v${result.note.version}.\n${metaLine(result.note)}`,
   );
@@ -281,12 +272,7 @@ export function registerTools(server: McpServer, email: string): void {
       if (title && !/^\s{0,3}#\s/.test(body)) {
         body = body.length > 0 ? `# ${title}\n\n${body}` : `# ${title}\n`;
       }
-      const note = await createNote(body, email);
-      const finalNote =
-        visibility && visibility !== note.visibility
-          ? ((await setNoteVisibility(note.id, visibility, email)) ?? note)
-          : note;
-      noteChanged(finalNote.id);
+      const finalNote = await createNote(body, email, visibility);
       return ok(
         `Created note "${noteTitle(finalNote.content)}" (${finalNote.id}).\n${metaLine(finalNote)}`,
       );
@@ -454,7 +440,6 @@ export function registerTools(server: McpServer, email: string): void {
           `Note "${id}" is owned by someone else, so its visibility cannot be changed (owner: ${note.owner || "unowned"}).`,
         );
       }
-      noteChanged(id);
       return ok(
         `Note "${noteTitle(updated.content)}" is now ${updated.visibility}.\n${metaLine(updated)}`,
       );
@@ -481,8 +466,6 @@ export function registerTools(server: McpServer, email: string): void {
           `Note "${id}" is owned by ${note.owner || "someone else"} and cannot be deleted by ${email}.`,
         );
       }
-      noteRemoved(id);
-      noteChanged(id);
       return ok(`Deleted note "${noteTitle(note.content)}" (${id}).`);
     },
   );

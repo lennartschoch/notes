@@ -8,7 +8,13 @@ import express, {
   type Response,
 } from "express";
 import { requireUser } from "./auth.js";
-import { initNotifier, noteRemoved, scheduleNoteChange } from "./notifier.js";
+import {
+  createNote,
+  deleteNote,
+  setNoteVisibility,
+  updateNote,
+} from "./changes.js";
+import { initNotifier } from "./notifier.js";
 import { mountMcp } from "./mcp/http.js";
 import {
   getVapid,
@@ -16,15 +22,7 @@ import {
   removeSubscription,
   upsertSubscription,
 } from "./pushStore.js";
-import {
-  createNote,
-  deleteNote,
-  getNote,
-  init,
-  listNotes,
-  setNoteVisibility,
-  updateNote,
-} from "./store.js";
+import { getNote, init, listNotes } from "./store.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 4000);
@@ -91,11 +89,6 @@ app.put("/api/notes/:id", requireUser, async (req, res) => {
     res.status(409).json(result.note);
     return;
   }
-  // Edits to a public note notify the other users it is shared with, once
-  // they settle down (see notifier.ts).
-  if (result.note.visibility === "public") {
-    scheduleNoteChange(result.note, req.user!.email);
-  }
   res.json(result.note);
 });
 
@@ -123,7 +116,6 @@ app.delete("/api/notes/:id", requireUser, async (req, res) => {
     res.status(404).json({ error: "Note not found" });
     return;
   }
-  noteRemoved(String(req.params.id));
   res.status(204).end();
 });
 
