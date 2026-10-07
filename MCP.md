@@ -102,9 +102,13 @@ must resolve to one.
   no second credential when the app moves host — and, the same coin, agent
   access goes down with Cloudflare, not with the local network.
 
-- **Local development (`NODE_ENV !== production`).** No credential means the
-  app's dev identity is used; send `x-dev-user-email: someone@example.com` to
-  act as a specific user, which is how the e2e suite drives two identities.
+- **Local development (`DEV_USERS=1`).** With the opt-in flag set, no
+  credential means the app's dev identity is used; send
+  `x-dev-user-email: someone@example.com` to act as a specific user, which is
+  how the e2e suite drives two identities. The flag is explicit rather than
+  "not production" so a deployment that forgets its environment fails closed:
+  without it, an identity header is ignored and every anonymous request gets a
+  `401`.
 
 ## Tools
 
