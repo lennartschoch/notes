@@ -441,17 +441,18 @@ export default function App() {
       setStatus("error");
       return;
     }
-    setNotes((prev) => {
-      const next = prev.filter((note) => note.id !== id);
-      if (selectedId === id) {
-        const first = next[0];
-        setSelectedId(first?.id ?? null);
-        setDraft(first?.content ?? "");
-        setStatus(hasActivePending() ? "offline" : "idle");
-        setPane("list");
-      }
-      return next;
-    });
+    // Computed from the rendered list rather than inside a setNotes updater:
+    // updaters must be pure (StrictMode runs them twice), and selecting the
+    // next note is not a notes-list concern anyway.
+    const next = notes.filter((note) => note.id !== id);
+    if (selectedId === id) {
+      const first = next[0];
+      setSelectedId(first?.id ?? null);
+      setDraft(first?.content ?? "");
+      setStatus(hasActivePending() ? "offline" : "idle");
+      setPane("list");
+    }
+    setNotes(next);
   }
 
   async function toggleVisibility() {
