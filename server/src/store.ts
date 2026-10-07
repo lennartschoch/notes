@@ -34,10 +34,11 @@ function canView(note: Note, email: string): boolean {
 
 // Content is collaborative: any authenticated user may edit a note they can
 // view when it is public, and owners (or legacy unowned notes) can always edit.
+// The rule is deliberately identical to canView — seeing a public note and
+// editing it are the same grant here — but kept as its own function so a
+// future read-only sharing mode has a name to hang off of.
 function canEditContent(note: Note, email: string): boolean {
-  return (
-    note.visibility === "public" || note.owner === "" || note.owner === email
-  );
+  return canView(note, email);
 }
 
 // Managing a note — changing its visibility or deleting it — stays with its
