@@ -7,6 +7,7 @@ import express, {
   type Request,
   type Response,
 } from "express";
+import { z } from "zod";
 import { requireUser } from "./auth.js";
 import {
   createNote,
@@ -26,6 +27,39 @@ import { getNote, init, listNotes } from "./store.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 4000);
+
+// Request bodies, spoken in the same zod the MCP tools and the persisted
+// stores use. parseBody writes the 400 and returns undefined when a body
+// does not match, so handlers only ever see typed input.
+const createNoteBody = z.object({ content: z.string().catch("") });
+const updateNoteBody = z.object({
+  content: z.string(),
+  version: z.number().int(),
+});
+const visibilityBody = z.object({ visibility: z.enum(["private", "public"]) });
+const pushSubscriptionBody = z.object({
+  endpoint: z.string().regex(/^https?:\/\//i),
+  keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
+});
+const pushRemovalBody = z.object({ endpoint: z.string().min(1) });
+
+function parseBody<S extends z.ZodType>(
+  schema: S,
+  req: Request,
+  res: Response,
+): z.infer<S> | undefined {
+  const parsed = schema.safeParse(req.body ?? {});
+  if (parsed.success) return parsed.data;
+  const detail = parsed.error.issues
+    .map((issue) =>
+      issue.path.length > 0
+        ? `${issue.path.join(".")}: ${issue.message}`
+        : issue.message,
+    )
+    .join("; ");
+  res.status(400).json({ error: detail });
+  return undefined;
+}
 
 const app = express();
 app.use(cors());
@@ -58,27 +92,19 @@ app.get("/api/notes/:id", requireUser, (req, res) => {
 // Express 5 forwards rejected promises from async handlers to the error
 // middleware, so no wrapper is needed.
 app.post("/api/notes", requireUser, async (req, res) => {
-  const content = typeof req.body?.content === "string" ? req.body.content : "";
-  const note = await createNote(content, req.user!.email);
+  const body = parseBody(createNoteBody, req, res);
+  if (!body) return;
+  const note = await createNote(body.content, req.user!.email);
   res.status(201).json(note);
 });
 
 app.put("/api/notes/:id", requireUser, async (req, res) => {
-  const version = req.body?.version;
-  if (
-    typeof req.body?.content !== "string" ||
-    typeof version !== "number" ||
-    !Number.isInteger(version)
-  ) {
-    res
-      .status(400)
-      .json({ error: "content must be a string and version an integer" });
-    return;
-  }
+  const body = parseBody(updateNoteBody, req, res);
+  if (!body) return;
   const result = await updateNote(
     String(req.params.id),
-    req.body.content,
-    version,
+    body.content,
+    body.version,
     req.user!.email,
   );
   if (result.status === "not_found") {
@@ -93,14 +119,11 @@ app.put("/api/notes/:id", requireUser, async (req, res) => {
 });
 
 app.patch("/api/notes/:id", requireUser, async (req, res) => {
-  const visibility = req.body?.visibility;
-  if (visibility !== "private" && visibility !== "public") {
-    res.status(400).json({ error: 'visibility must be "private" or "public"' });
-    return;
-  }
+  const body = parseBody(visibilityBody, req, res);
+  if (!body) return;
   const note = await setNoteVisibility(
     String(req.params.id),
-    visibility,
+    body.visibility,
     req.user!.email,
   );
   if (!note) {
@@ -127,34 +150,21 @@ app.get("/api/push/public-key", requireUser, (_req, res) => {
 });
 
 app.put("/api/push/subscription", requireUser, (req, res) => {
-  const endpoint =
-    typeof req.body?.endpoint === "string" ? req.body.endpoint : "";
-  const p256dh =
-    typeof req.body?.keys?.p256dh === "string" ? req.body.keys.p256dh : "";
-  const auth =
-    typeof req.body?.keys?.auth === "string" ? req.body.keys.auth : "";
-  if (
-    !/^https?:\/\//i.test(endpoint) ||
-    p256dh.length === 0 ||
-    auth.length === 0
-  ) {
-    res
-      .status(400)
-      .json({ error: "endpoint, keys.p256dh and keys.auth are required" });
-    return;
-  }
-  void upsertSubscription(req.user!.email, endpoint, p256dh, auth);
+  const body = parseBody(pushSubscriptionBody, req, res);
+  if (!body) return;
+  void upsertSubscription(
+    req.user!.email,
+    body.endpoint,
+    body.keys.p256dh,
+    body.keys.auth,
+  );
   res.status(204).end();
 });
 
 app.delete("/api/push/subscription", requireUser, (req, res) => {
-  const endpoint =
-    typeof req.body?.endpoint === "string" ? req.body.endpoint : "";
-  if (endpoint.length === 0) {
-    res.status(400).json({ error: "endpoint is required" });
-    return;
-  }
-  void removeSubscription(endpoint);
+  const body = parseBody(pushRemovalBody, req, res);
+  if (!body) return;
+  void removeSubscription(body.endpoint);
   res.status(204).end();
 });
 
