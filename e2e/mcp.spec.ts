@@ -266,6 +266,40 @@ test.describe("MCP server", () => {
     }
   });
 
+  test("tells open sessions about edits made through the REST API", async ({
+    request,
+  }) => {
+    // The web UI writes notes over REST; an agent watching a shared note has
+    // to learn about those edits too, not only about agent-made ones.
+    const created = await request.post("/api/notes", {
+      headers: { "x-dev-user-email": ALICE },
+      data: { content: `edited from the web ${run}` },
+    });
+    expect(created.ok()).toBe(true);
+    const note = (await created.json()) as { id: string; version: number };
+
+    const bob = await connectAs(BOB);
+    try {
+      const changed = new Promise<string>((resolve) => {
+        bob.setNotificationHandler(
+          ResourceUpdatedNotificationSchema,
+          async (notification) => resolve(notification.params.uri),
+        );
+      });
+      const updated = await request.put(`/api/notes/${note.id}`, {
+        headers: { "x-dev-user-email": ALICE },
+        data: { content: `edited from the web again ${run}`, version: 0 },
+      });
+      expect(updated.ok()).toBe(true);
+      await expect(changed).resolves.toBe(`note://${note.id}`);
+    } finally {
+      await bob.close();
+      await request.delete(`/api/notes/${note.id}`, {
+        headers: { "x-dev-user-email": ALICE },
+      });
+    }
+  });
+
   test("refuses requests without a live session", async ({ request }) => {
     const initialize = {
       jsonrpc: "2.0",
