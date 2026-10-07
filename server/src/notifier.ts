@@ -136,6 +136,9 @@ async function fire(id: string): Promise<void> {
   void saveNoteNotifyState(id, snapshot(current));
 }
 
+// Returns whether a batch was attempted, not whether anything arrived: the
+// cooldown starts on the attempt, so a push-service outage costs one silent
+// hour instead of a retry storm once it recovers.
 async function deliver(
   note: Note,
   title: string,
