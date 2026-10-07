@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import webpush from "web-push";
+import { z } from "zod";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 // Follow the notes store onto whatever volume NOTES_DATA_FILE points at, so
@@ -13,28 +14,48 @@ const DATA_FILE =
   process.env.PUSH_DATA_FILE ?? join(dirname(NOTES_DATA_FILE), "push.json");
 const DEFAULT_VAPID_SUBJECT = "mailto:notes@localhost";
 
-export interface PushSubscriptionRecord {
-  endpoint: string;
-  email: string;
-  p256dh: string;
-  auth: string;
-}
+// The shapes stored in push.json, tolerant in the same way as the note
+// store's schema: a field that cannot be read falls back to its default, a
+// record whose essentials are broken is dropped on load.
+const vapidSchema = z.object({
+  subject: z.string().min(1).catch(DEFAULT_VAPID_SUBJECT),
+  publicKey: z.string().min(1),
+  privateKey: z.string().min(1),
+});
+export type VapidDetails = z.infer<typeof vapidSchema>;
 
-export interface VapidDetails {
-  subject: string;
-  publicKey: string;
-  privateKey: string;
-}
+const subscriptionSchema = z.object({
+  endpoint: z.string().min(1),
+  email: z.string().catch(""),
+  p256dh: z.string(),
+  auth: z.string(),
+});
+export type PushSubscriptionRecord = z.infer<typeof subscriptionSchema>;
 
 // Notification-scheduler state that must survive a restart: whether changes
 // are still waiting for their quiet period and when the last notification
 // went out (the cooldown anchor).
-export interface NoteNotifyState {
-  lastChangedAt: number;
-  lastNotifiedAt: number;
-  pending: boolean;
-  editors: string[];
-  title: string;
+const noteNotifyStateSchema = z.object({
+  lastChangedAt: z.number(),
+  lastNotifiedAt: z.number(),
+  pending: z.boolean().catch(false),
+  editors: z
+    .unknown()
+    .transform((value) =>
+      Array.isArray(value)
+        ? value.filter((email): email is string => typeof email === "string")
+        : [],
+    ),
+  title: z.string().catch(""),
+});
+export type NoteNotifyState = z.infer<typeof noteNotifyStateSchema>;
+
+function parseSchema<S extends z.ZodType>(
+  schema: S,
+  raw: unknown,
+): z.infer<S> | null {
+  const parsed = schema.safeParse(raw ?? {});
+  return parsed.success ? parsed.data : null;
 }
 
 interface PushData {
@@ -58,65 +79,6 @@ function persist(): Promise<void> {
   return writeChain;
 }
 
-function normalizeVapid(raw: unknown): VapidDetails | null {
-  const vapid = (raw ?? {}) as Partial<VapidDetails>;
-  if (
-    typeof vapid.publicKey !== "string" ||
-    vapid.publicKey.length === 0 ||
-    typeof vapid.privateKey !== "string" ||
-    vapid.privateKey.length === 0
-  ) {
-    return null;
-  }
-  return {
-    subject:
-      typeof vapid.subject === "string" && vapid.subject.length > 0
-        ? vapid.subject
-        : DEFAULT_VAPID_SUBJECT,
-    publicKey: vapid.publicKey,
-    privateKey: vapid.privateKey,
-  };
-}
-
-function normalizeSubscription(raw: unknown): PushSubscriptionRecord | null {
-  const sub = (raw ?? {}) as Partial<PushSubscriptionRecord>;
-  if (
-    typeof sub.endpoint !== "string" ||
-    sub.endpoint.length === 0 ||
-    typeof sub.p256dh !== "string" ||
-    typeof sub.auth !== "string"
-  ) {
-    return null;
-  }
-  return {
-    endpoint: sub.endpoint,
-    email: typeof sub.email === "string" ? sub.email : "",
-    p256dh: sub.p256dh,
-    auth: sub.auth,
-  };
-}
-
-function normalizeNoteState(raw: unknown): NoteNotifyState | null {
-  const state = (raw ?? {}) as Partial<NoteNotifyState>;
-  if (
-    typeof state.lastChangedAt !== "number" ||
-    typeof state.lastNotifiedAt !== "number"
-  ) {
-    return null;
-  }
-  return {
-    lastChangedAt: state.lastChangedAt,
-    lastNotifiedAt: state.lastNotifiedAt,
-    pending: state.pending === true,
-    editors: Array.isArray(state.editors)
-      ? state.editors.filter(
-          (email): email is string => typeof email === "string",
-        )
-      : [],
-    title: typeof state.title === "string" ? state.title : "",
-  };
-}
-
 function vapidFromEnv(): VapidDetails | null {
   const publicKey = process.env.VAPID_PUBLIC_KEY;
   const privateKey = process.env.VAPID_PRIVATE_KEY;
@@ -137,14 +99,16 @@ export async function initPush(): Promise<void> {
     const notes: Record<string, NoteNotifyState> = {};
     if (obj.notes && typeof obj.notes === "object") {
       for (const [id, value] of Object.entries(obj.notes)) {
-        const state = normalizeNoteState(value);
+        const state = parseSchema(noteNotifyStateSchema, value);
         if (state) notes[id] = state;
       }
     }
     data = {
-      vapid: normalizeVapid(obj.vapid),
+      vapid: parseSchema(vapidSchema, obj.vapid),
       subscriptions: Array.isArray(obj.subscriptions)
-        ? obj.subscriptions.map(normalizeSubscription).filter((s) => s !== null)
+        ? obj.subscriptions
+            .map((sub) => parseSchema(subscriptionSchema, sub))
+            .filter((sub) => sub !== null)
         : [],
       notes,
     };

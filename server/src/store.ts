@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import type { Note, Visibility } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -47,31 +48,29 @@ function canManage(note: Note, email: string): boolean {
   return note.owner === "" || note.owner === email;
 }
 
-// Fills in fields added after the first release so an old data file keeps
-// loading. Unowned notes stay unowned (shared with every authenticated user).
-function normalize(raw: unknown): Note {
-  const note = (raw ?? {}) as Partial<Note>;
-  const now = new Date().toISOString();
-  return {
-    id: typeof note.id === "string" ? note.id : randomUUID(),
-    content: typeof note.content === "string" ? note.content : "",
-    owner: typeof note.owner === "string" ? note.owner : "",
-    visibility: note.visibility === "public" ? "public" : "private",
-    version:
-      typeof note.version === "number" && Number.isInteger(note.version)
-        ? note.version
-        : 0,
-    createdAt: typeof note.createdAt === "string" ? note.createdAt : now,
-    updatedAt: typeof note.updatedAt === "string" ? note.updatedAt : now,
-  };
-}
+// The shape of a note in the data file. Lenient by design: a field that is
+// missing or of the wrong type falls back to its default instead of
+// rejecting the note, so a data file written before the field existed - or
+// cut short by a crash mid-write - still loads.
+const timestamp = () => new Date().toISOString();
+const noteRecord = z.object({
+  id: z.string().catch(() => randomUUID()),
+  content: z.string().catch(""),
+  owner: z.string().catch(""),
+  visibility: z.enum(["private", "public"]).catch("private"),
+  version: z.number().int().catch(0),
+  createdAt: z.string().catch(timestamp),
+  updatedAt: z.string().catch(timestamp),
+});
 
 export async function init(): Promise<void> {
   if (loaded) return;
   try {
     const raw = await readFile(DATA_FILE, "utf8");
     const parsed: unknown = JSON.parse(raw);
-    notes = Array.isArray(parsed) ? parsed.map(normalize) : [];
+    notes = Array.isArray(parsed)
+      ? parsed.map((raw: unknown) => noteRecord.parse(raw ?? {}))
+      : [];
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     notes = [];
