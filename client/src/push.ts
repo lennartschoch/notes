@@ -78,8 +78,16 @@ export async function enablePush(): Promise<boolean> {
 export async function disablePush(): Promise<boolean> {
   const subscription = await existingSubscription();
   if (!subscription) return true;
+  // Tell the server first, but unsubscribe the browser either way: a server
+  // that cannot be reached right now is no reason to keep the user's
+  // notifications switched on, and a leftover subscription is pruned on its
+  // next 404/410 anyway. The toggle should follow what the user asked for.
   try {
     await api.unregisterPushSubscription(subscription.endpoint);
+  } catch {
+    // Best effort; the local unsubscribe below is what the user feels.
+  }
+  try {
     await subscription.unsubscribe();
     return true;
   } catch {
