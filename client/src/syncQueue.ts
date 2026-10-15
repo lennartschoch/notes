@@ -41,7 +41,7 @@ export interface SyncQueue {
   schedule(
     id: string,
     content: string,
-    fallbackVersion: number,
+    fallbackVersion: number | null,
     fallbackBaseContent?: string | null,
   ): void;
   flush(): Promise<void>;
@@ -49,6 +49,11 @@ export interface SyncQueue {
   get(id: string): PendingChange | undefined;
   has(id: string): boolean;
   drop(id: string): void;
+  // The user looked at the server copy and chose to keep their own text.
+  // Re-arms the quarantined edit against the version the caller just read;
+  // it carries no merge base, so the server takes it as a deliberate
+  // overwrite of that exact version (a newer race conflicts again).
+  resolveConflictKeep(id: string, version: number): Promise<void>;
   hasActive(): boolean;
 }
 
@@ -57,11 +62,14 @@ export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
   const pending = new Map<string, PendingChange>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let flushing = false;
+  // A flush requested while another flush is in flight must not be lost:
+  // the running loop re-checks the queue before it exits.
+  let rerunRequested = false;
 
   function hasActive(): boolean {
-    return Array.from(pending.values()).some(
-      (change) => change.status === "pending",
-    );
+    // Every queued change counts as unsaved, quarantined ones included:
+    // their text is real user work that never reached the server.
+    return pending.size > 0;
   }
 
   async function flush(): Promise<void> {
@@ -69,83 +77,127 @@ export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
       clearTimeout(timer);
       timer = null;
     }
-    if (flushing) return;
+    if (flushing) {
+      rerunRequested = true;
+      return;
+    }
     flushing = true;
     try {
-      // Keep going until every pending change is either uploaded,
-      // quarantined or fails, so a flaky connection does not block a later
-      // edit.
-      while (pending.size > 0) {
-        const entries = Array.from(pending.entries());
-        let progressed = false;
-        for (const [id, change] of entries) {
-          if (change.status === "conflicted") continue;
-          if (pending.get(id) !== change) continue;
-          try {
-            const updated = await api.update(
-              id,
-              change.content,
-              change.baseVersion,
-              change.baseContent,
-            );
-            const queued = pending.get(id);
-            if (queued === change) {
-              pending.delete(id);
-              clearPendingChange(id);
-            } else if (queued && queued.status === "pending") {
-              // A newer edit was queued while this save was in flight and
-              // captured the pre-save version. Rebase it onto the version
-              // just written, otherwise its own save would falsely conflict.
-              queued.baseVersion = updated.version;
-              // Only advance the merge base when this save landed on top of
-              // a quiet server. If the server merged in someone else's text
-              // (updated.content differs from what was sent), the queued
-              // edit still descends from the older ancestor — keeping it
-              // lets the next merge re-apply the other side's text instead
-              // of treating its absence as a deletion.
-              if (
-                queued.baseContent !== null &&
-                updated.content === change.content
+      do {
+        rerunRequested = false;
+        // Keep going until every pending change is either uploaded,
+        // quarantined or fails, so a flaky connection does not block a later
+        // edit.
+        while (pending.size > 0) {
+          const entries = Array.from(pending.entries());
+          let progressed = false;
+          for (const [id, change] of entries) {
+            if (change.status === "conflicted") continue;
+            if (pending.get(id) !== change) continue;
+            try {
+              let version = change.baseVersion;
+              if (version === null) {
+                // The edit lost track of which server version it descends
+                // from (restored from an older client's storage, say). Ask
+                // the server where it stands before guessing.
+                const current = await api.get(id);
+                version = current.version;
+                if (pending.get(id) === change) {
+                  change.baseVersion = version;
+                  savePendingChange(change);
+                }
+              }
+              const updated = await api.update(
+                id,
+                change.content,
+                version,
+                change.baseContent,
+              );
+              const queued = pending.get(id);
+              if (queued === change) {
+                pending.delete(id);
+                clearPendingChange(id);
+              } else if (queued && queued.status === "pending") {
+                // A newer edit was queued while this save was in flight and
+                // captured the pre-save version. Rebase it onto the version
+                // just written, otherwise its own save would falsely
+                // conflict.
+                queued.baseVersion = updated.version;
+                // Only advance the merge base when this save landed on top
+                // of a quiet server. If the server merged in someone else's
+                // text (updated.content differs from what was sent), the
+                // queued edit still descends from the older ancestor —
+                // keeping it lets the next merge re-apply the other side's
+                // text instead of treating its absence as a deletion.
+                if (
+                  queued.baseContent !== null &&
+                  updated.content === change.content
+                ) {
+                  queued.baseContent = updated.content;
+                }
+                savePendingChange(queued);
+              }
+              events.saved(
+                updated,
+                pending.get(id)?.content ?? updated.content,
+              );
+              progressed = true;
+            } catch (error) {
+              // The note was deleted elsewhere, so there is nothing to sync.
+              if (error instanceof ApiError && error.status === 404) {
+                pending.delete(id);
+                clearPendingChange(id);
+                events.gone(id);
+                progressed = true;
+              } else if (
+                error instanceof ApiError &&
+                error.status === 409 &&
+                error.body
               ) {
-                queued.baseContent = updated.content;
+                // The server copy moved on.
+                const server = error.body as Note;
+                const queued = pending.get(id);
+                if (
+                  queued &&
+                  queued !== change &&
+                  queued.status === "pending" &&
+                  queued.baseContent !== null
+                ) {
+                  // A newer edit landed while this save was in flight, and
+                  // it knows its own ancestor: rebase it onto the server
+                  // version and let the next save merge, instead of
+                  // quarantining the user's newest text over a stale
+                  // version.
+                  queued.baseVersion = server.version;
+                  savePendingChange(queued);
+                } else {
+                  // Nothing to merge against: keep the local edit visible
+                  // but never send it again until the user resolves
+                  // explicitly.
+                  const loser = queued ?? change;
+                  if (loser.status !== "conflicted") {
+                    loser.status = "conflicted";
+                    loser.server = {
+                      content: server.content,
+                      version: server.version,
+                    };
+                    savePendingChange(loser);
+                    events.conflicted(id);
+                  }
+                }
+                events.noteVersion(id, server.version);
+                progressed = true;
               }
-              savePendingChange(queued);
+              // Any other failure leaves the change in `pending` and in
+              // local storage so it is retried when the connection recovers.
             }
-            events.saved(updated, pending.get(id)?.content ?? updated.content);
-            progressed = true;
-          } catch (error) {
-            // The note was deleted elsewhere, so there is nothing to sync.
-            if (error instanceof ApiError && error.status === 404) {
-              pending.delete(id);
-              clearPendingChange(id);
-              events.gone(id);
-              progressed = true;
-            } else if (
-              error instanceof ApiError &&
-              error.status === 409 &&
-              error.body
-            ) {
-              // The server copy moved on. Keep the local edit but never send
-              // it again until the user resolves the conflict explicitly.
-              const server = error.body as Note;
-              if (pending.get(id) === change) {
-                change.status = "conflicted";
-                change.server = {
-                  content: server.content,
-                  version: server.version,
-                };
-                savePendingChange(change);
-                events.conflicted(id);
-              }
-              events.noteVersion(id, server.version);
-              progressed = true;
-            }
-            // Any other failure leaves the change in `pending` and in local
-            // storage so it is retried when the connection recovers.
           }
+          if (!progressed) break;
         }
-        if (!progressed) break;
-      }
+        // A schedule() that landed just as this loop drained the queue, and
+        // whose debounced flush was swallowed by the guard above, gets
+        // picked up here instead of waiting for the next retry tick.
+      } while (rerunRequested && pending.size > 0);
     } finally {
       flushing = false;
     }
@@ -155,7 +207,7 @@ export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
   function schedule(
     id: string,
     content: string,
-    fallbackVersion: number,
+    fallbackVersion: number | null,
     fallbackBaseContent: string | null = null,
   ): void {
     const existing = pending.get(id);
@@ -205,6 +257,20 @@ export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
     }
   }
 
+  function resolveConflictKeep(id: string, version: number): Promise<void> {
+    const change = pending.get(id);
+    if (!change || change.status !== "conflicted") return Promise.resolve();
+    change.status = "pending";
+    change.baseVersion = version;
+    // No merge base on purpose: "keep mine" means the user's text wins over
+    // the version they just saw. If the server moved past it in the
+    // meantime, the version check conflicts again rather than clobbering.
+    change.baseContent = null;
+    change.server = null;
+    savePendingChange(change);
+    return flush();
+  }
+
   return {
     setEvents: (next) => {
       events = next;
@@ -215,6 +281,7 @@ export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
     get: (id) => pending.get(id),
     has: (id) => pending.has(id),
     drop,
+    resolveConflictKeep,
     hasActive,
   };
 }

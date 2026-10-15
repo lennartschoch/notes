@@ -365,3 +365,186 @@ test("rebasing after a merged save keeps the older ancestor", async () => {
   assert.equal(requests[1]?.body?.baseContent, "base");
   assert.equal(requests[1]?.body?.version, 1);
 });
+
+// Reusable gate: every request runs `respond`'s outcome, the first one only
+// after the test releases it.
+function gatedFetch(first: () => Response, rest: (index: number) => Response) {
+  const requests: Recorded[] = [];
+  let releaseFirst: (value: Response) => void = () => {
+    throw new Error("first request never started");
+  };
+  (globalThis as Record<string, unknown>).fetch = (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
+    requests.push({
+      method: init?.method,
+      url: String(input),
+      body: init?.body
+        ? (JSON.parse(String(init.body)) as {
+            content: string;
+            version: number;
+            baseContent?: string;
+          })
+        : undefined,
+    });
+    if (requests.length === 1) {
+      return new Promise<Response>((resolve) => {
+        releaseFirst = resolve;
+      });
+    }
+    return Promise.resolve(rest(requests.length - 1));
+  };
+  return {
+    requests,
+    release: () => releaseFirst(first()),
+  };
+}
+
+const json = (body: unknown): Response =>
+  ({
+    ok: true,
+    status: 200,
+    statusText: "200",
+    json: async () => body,
+  }) as Response;
+
+const failure = (status: number, body: unknown): Response =>
+  ({
+    ok: false,
+    status,
+    statusText: String(status),
+    json: async () => body,
+  }) as Response;
+
+test("a 409 rebases a newer queued edit that knows its ancestor", async () => {
+  storageMap.clear();
+  const { queue, events } = collectEvents();
+  const gate = gatedFetch(
+    () => failure(409, note({ version: 5, content: "theirs" })),
+    () => json(note({ version: 6, content: "mine+more" })),
+  );
+
+  queue.schedule("n1", "mine", 0, "base");
+  const flushing = queue.flush();
+  await Promise.resolve(); // let flush dispatch the first request
+  queue.schedule("n1", "mine+more", 0);
+  gate.release();
+  await flushing;
+
+  // The newer edit was rebased onto the server's version and merged, not
+  // punished twice for the same race and then quarantined.
+  assert.deepEqual(requestsBodies(gate.requests), [
+    { content: "mine", version: 0, baseContent: "base" },
+    { content: "mine+more", version: 5, baseContent: "base" },
+  ]);
+  assert.deepEqual(events.conflicted, []);
+  assert.equal(events.saved.length, 1);
+  assert.equal(queue.has("n1"), false);
+});
+
+function requestsBodies(requests: Recorded[]) {
+  return requests.map((r) => r.body);
+}
+
+test("a 409 quarantines a newer queued edit with no known ancestor", async () => {
+  storageMap.clear();
+  const { queue, events } = collectEvents();
+  const gate = gatedFetch(
+    () => failure(409, note({ version: 5, content: "theirs" })),
+    () => json(note()),
+  );
+
+  queue.schedule("n1", "mine", 0);
+  const flushing = queue.flush();
+  await Promise.resolve();
+  queue.schedule("n1", "mine+more", 0);
+  gate.release();
+  await flushing;
+
+  // Without a merge base a blind retry could clobber, so the newest text
+  // is quarantined once — and not re-sent behind the queue's back.
+  assert.equal(gate.requests.length, 1);
+  assert.deepEqual(events.conflicted, ["n1"]);
+  assert.equal(queue.get("n1")?.status, "conflicted");
+  assert.equal(queue.get("n1")?.content, "mine+more");
+});
+
+test("an edit with an unknown version asks the server before guessing", async () => {
+  storageMap.clear();
+  const { requests } = stubFetch(
+    { status: 200, body: note({ version: 7, content: "server7" }) },
+    { status: 200, body: note({ version: 8, content: "hello" }) },
+  );
+  const { queue } = collectEvents();
+
+  queue.schedule("n1", "hello", null);
+  await queue.flush();
+
+  assert.deepEqual(
+    requests.map((r) => [r.method ?? "GET", r.url]),
+    [
+      ["GET", "/api/notes/n1"],
+      ["PUT", "/api/notes/n1"],
+    ],
+  );
+  assert.deepEqual(requests[1]?.body, { content: "hello", version: 7 });
+});
+
+test("a swallowed flush is re-run once the in-flight flush settles", async () => {
+  storageMap.clear();
+  const { queue } = collectEvents();
+  const gate = gatedFetch(
+    () => failure(500, { error: "boom" }),
+    () => failure(500, { error: "boom" }),
+  );
+
+  queue.schedule("n1", "A", 0);
+  const flushing = queue.flush();
+  await Promise.resolve();
+  // A second note is edited while the first upload is wedged; its debounced
+  // flush fires while the first flush is still in flight and is swallowed.
+  queue.schedule("n2", "B", 0);
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  gate.release();
+  await flushing;
+
+  // The swallowed flush must still have been honoured by the running loop.
+  assert.ok(
+    gate.requests.some((r) => r.body?.content === "B"),
+    "queued edit B was never attempted after the swallowed flush",
+  );
+});
+
+test("a conflicted edit counts as unsaved work", async () => {
+  storageMap.clear();
+  stubFetch({ status: 409, body: note({ version: 5, content: "elsewhere" }) });
+  const { queue, events } = collectEvents();
+
+  queue.schedule("n1", "mine", 0);
+  await queue.flush();
+
+  assert.equal(queue.hasActive(), true);
+  assert.equal(events.statuses.at(-1), "offline");
+});
+
+test("resolveConflictKeep re-sends the local text as a deliberate write", async () => {
+  storageMap.clear();
+  const { requests } = stubFetch(
+    { status: 409, body: note({ version: 5, content: "elsewhere" }) },
+    { status: 200, body: note({ version: 6, content: "mine" }) },
+  );
+  const { queue, events } = collectEvents();
+
+  queue.schedule("n1", "mine", 0, "base");
+  await queue.flush();
+  assert.equal(queue.get("n1")?.status, "conflicted");
+
+  await queue.resolveConflictKeep("n1", 5);
+
+  // The kept edit is aimed at the version the user just confirmed, without
+  // a merge base: their text wins over that exact version.
+  assert.deepEqual(requests[1]?.body, { content: "mine", version: 5 });
+  assert.equal(events.saved.length, 1);
+  assert.equal(queue.has("n1"), false);
+});

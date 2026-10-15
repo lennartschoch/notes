@@ -5,10 +5,14 @@ export type PendingStatus = "pending" | "conflicted";
 export interface PendingChange {
   id: string;
   content: string;
-  baseVersion: number;
+  // The server version this edit is against, or null when the client lost
+  // track (restored from an older client's storage, say). The queue
+  // resolves a null version from the server before uploading rather than
+  // guessing 0 and collecting a false conflict.
+  baseVersion: number | null;
   // The server text this edit descends from, when the client ever saw it.
   // Sent with the upload so a lost version race can be merged instead of
-  // quarantined. null means "unknown" — the old conflict behaviour applies.
+  // quarantined. null means "unknown" — the plain conflict behaviour.
   baseContent: string | null;
   status: PendingStatus;
   server: { content: string; version: number } | null;
@@ -50,7 +54,9 @@ function read(): Record<string, PendingChange> {
         id,
         content: candidate.content,
         baseVersion:
-          typeof candidate.baseVersion === "number" ? candidate.baseVersion : 0,
+          typeof candidate.baseVersion === "number"
+            ? candidate.baseVersion
+            : null,
         baseContent:
           typeof candidate.baseContent === "string"
             ? candidate.baseContent

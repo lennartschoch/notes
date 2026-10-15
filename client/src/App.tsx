@@ -294,14 +294,38 @@ export default function App() {
       ),
     );
     const server = serverTruth.current.get(selectedId);
+    // A null version means the client has never seen this note's server
+    // text; the queue asks the server where it stands before uploading,
+    // instead of guessing version 0 and collecting a false conflict.
     queue.schedule(
       selectedId,
       value,
-      server?.version ??
-        notesRef.current.find((note) => note.id === selectedId)?.version ??
-        0,
+      server?.version ?? null,
       server?.content ?? null,
     );
+  }
+
+  // Resolve a conflict in the user's favour: re-read the server copy, then
+  // re-arm the quarantined edit against that exact version. The upload
+  // carries no merge base, so it overwrites what the user just saw — and
+  // conflicts again, rather than clobbering, if someone moved ahead first.
+  async function keepMine() {
+    const id = selectedId;
+    if (!id) return;
+    try {
+      const latest = await api.get(id);
+      serverTruth.current.set(id, {
+        content: latest.content,
+        version: latest.version,
+      });
+      // Clear the banner before the upload so a fresh race during the save
+      // can raise it again, and only then re-arm the quarantined edit.
+      dropConflicted(id);
+      setStatus("saving");
+      await queue.resolveConflictKeep(id, latest.version);
+    } catch {
+      setStatus("error");
+    }
   }
 
   async function selectNote(id: string) {
@@ -544,6 +568,16 @@ export default function App() {
                   )}
                   {selectedNote?.visibility === "public" ? "Public" : "Private"}
                 </button>
+                {selectedConflicted && (
+                  <button
+                    type="button"
+                    className="flex h-9 flex-none items-center gap-1.5 rounded-lg bg-amber-600 px-3 text-[0.8125rem] font-medium text-white hover:bg-amber-700 active:bg-amber-700"
+                    onClick={() => void keepMine()}
+                    title="Save your version over the copy that changed elsewhere"
+                  >
+                    Keep mine
+                  </button>
+                )}
                 <span
                   className={`text-[0.8125rem] ${
                     selectedConflicted

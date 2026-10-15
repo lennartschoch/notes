@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -20,7 +20,13 @@ function persist(): Promise<void> {
     .catch(() => {})
     .then(async () => {
       await mkdir(dirname(DATA_FILE), { recursive: true });
-      await writeFile(DATA_FILE, JSON.stringify(notes, null, 2), "utf8");
+      // Write a sibling temp file and rename it over the data file: rename
+      // is atomic within a filesystem, so a crash mid-write can never leave
+      // a truncated notes.json behind for the lenient loader to silently
+      // default back to "version 0, empty content".
+      const tmp = `${DATA_FILE}.tmp`;
+      await writeFile(tmp, JSON.stringify(notes, null, 2), "utf8");
+      await rename(tmp, DATA_FILE);
     });
   return writeChain;
 }
@@ -70,7 +76,23 @@ export async function init(): Promise<void> {
     const raw = await readFile(DATA_FILE, "utf8");
     const parsed: unknown = JSON.parse(raw);
     notes = Array.isArray(parsed)
-      ? parsed.map((raw: unknown) => noteRecord.parse(raw ?? {}))
+      ? parsed.map((raw: unknown) => {
+          const note = noteRecord.parse(raw ?? {});
+          // The schema defaults instead of rejecting, on purpose — but a
+          // defaulted field means the file was corrupt, and silent
+          // defaults here show up to users as phantom conflicts. Say so.
+          if (
+            raw === null ||
+            typeof raw !== "object" ||
+            typeof (raw as { content?: unknown }).content !== "string" ||
+            typeof (raw as { version?: unknown }).version !== "number"
+          ) {
+            console.warn(
+              `notes.json: record ${note.id} was corrupt; defaulted its missing fields`,
+            );
+          }
+          return note;
+        })
       : [];
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -126,30 +148,28 @@ export async function updateNote(
 ): Promise<UpdateResult> {
   const note = notes.find((n) => n.id === id);
   if (!note || !canEditContent(note, email)) return { status: "not_found" };
-  if (note.version !== version) {
-    // The server already holds exactly this text: almost certainly a retry
-    // of our own write whose response was lost. Let it succeed without
-    // burning a version instead of quarantining the client's own edit.
+  if (note.version !== version || baseContent !== undefined) {
+    // The server already holds exactly this text: either a retry of a save
+    // whose response was lost, or a write with nothing to record. Let it
+    // succeed without burning a version.
     if (note.content === content) return { status: "ok", note };
-    // The client also sent the text its edit grew out of, so the two
-    // divergent copies can be merged line by line: only edits that changed
-    // the same lines still lose.
-    if (baseContent !== undefined) {
+    // The write carries the text its edit descends from, and that is not
+    // what the server holds: the two divergent copies are merged line by
+    // line, so only edits that changed the same lines still lose.
+    if (baseContent !== undefined && baseContent !== note.content) {
       const merge = merge3(baseContent, content, note.content);
-      if (merge.status === "merged") {
-        if (merge.content === note.content) return { status: "ok", note };
-        if (note.owner === "") note.owner = email;
+      if (merge.status === "conflict") return { status: "conflict", note };
+      if (merge.content !== note.content) {
         note.content = merge.content;
         note.version += 1;
         note.updatedAt = new Date().toISOString();
         await persist();
         return { status: "ok", note, merged: true };
       }
+      return { status: "ok", note };
     }
-    return { status: "conflict", note };
+    if (note.version !== version) return { status: "conflict", note };
   }
-  // Claim a pre-ownership note for the first user to edit it.
-  if (note.owner === "") note.owner = email;
   note.content = content;
   note.version += 1;
   note.updatedAt = new Date().toISOString();
