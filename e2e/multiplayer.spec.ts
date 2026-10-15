@@ -58,6 +58,28 @@ test("multiplayer note lifecycle", async ({ browser, playwright, baseURL }) => {
   const deviceTwoContext = await browser.newContext({
     extraHTTPHeaders: ALICE,
   });
+  // "Device two" has no live channel: its WebSocket never opens, so the
+  // stale-version scenarios can freeze its view by blocking REST refreshes
+  // alone, exactly like a client stuck behind a broken connection.
+  await deviceTwoContext.addInitScript(() => {
+    class DeadWebSocket {
+      static readonly OPEN = 1;
+      readyState = 3;
+      onopen: unknown = null;
+      onmessage: unknown = null;
+      onclose: unknown = null;
+      onerror: unknown = null;
+      constructor() {
+        setTimeout(
+          () => (this.onclose as ((e: unknown) => void) | null)?.({}),
+          0,
+        );
+      }
+      send(): void {}
+      close(): void {}
+    }
+    (window as unknown as { WebSocket: unknown }).WebSocket = DeadWebSocket;
+  });
   const bobContext = await browser.newContext({ extraHTTPHeaders: BOB });
   const alicePage = await aliceContext.newPage();
   const deviceTwoPage = await deviceTwoContext.newPage();
@@ -218,14 +240,18 @@ test("multiplayer note lifecycle", async ({ browser, playwright, baseURL }) => {
     });
 
     await test.step("propagates deletion to the other user", async () => {
+      // Locate by id: with live sync on, the list title follows the server
+      // text, which earlier steps rewrote several times.
+      const publicItem = (page: Page) =>
+        page.locator(`li[data-note-id="${publicNoteId}"]`);
       alicePage.once("dialog", (dialog) => void dialog.accept());
-      await noteItem(alicePage, PUBLIC_NOTE)
+      await publicItem(alicePage)
         .getByRole("button", { name: "Delete note" })
         .click();
-      await expect(noteItem(alicePage, PUBLIC_NOTE)).toHaveCount(0);
+      await expect(publicItem(alicePage)).toHaveCount(0);
 
       await wake(bobPage);
-      await expect(noteItem(bobPage, PUBLIC_NOTE)).toHaveCount(0);
+      await expect(publicItem(bobPage)).toHaveCount(0);
     });
 
     await test.step("does not falsely quarantine a rapid second edit", async () => {

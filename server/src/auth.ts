@@ -50,6 +50,36 @@ export async function verifyAccessToken(
   }
 }
 
+// The identity behind a WebSocket handshake. WebSockets cannot carry custom
+// headers from the browser, so the sources are the same as requireUser's —
+// the Cloudflare Access assertion header, and the opt-in dev identity — with
+// one addition for dev/test only: an ?email= query parameter. It is ignored
+// unless DEV_USERS=1, exactly like the dev header.
+export async function identityFromHandshake(
+  headers: Record<string, string | string[] | undefined>,
+  queryEmail: string | null,
+): Promise<string | undefined> {
+  const token = headers["cf-access-jwt-assertion"];
+  if (typeof token === "string" && token.length > 0) {
+    const payload = await verifyAccessToken(token);
+    if (payload && typeof payload.email === "string" && payload.email) {
+      return payload.email.trim().toLowerCase();
+    }
+    return undefined;
+  }
+  if (process.env.DEV_USERS === "1") {
+    const header = headers["x-dev-user-email"];
+    const fromHeader = typeof header === "string" ? header : undefined;
+    return (
+      fromHeader?.trim().toLowerCase() ||
+      queryEmail?.trim().toLowerCase() ||
+      process.env.DEV_USER_EMAIL ||
+      "dev@localhost"
+    );
+  }
+  return undefined;
+}
+
 export async function requireUser(
   req: Request,
   res: Response,

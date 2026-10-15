@@ -8,8 +8,9 @@ import {
   useState,
 } from "react";
 import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
-import { noteTitle } from "shared";
+import { noteTitle, type LiveEditor } from "shared";
 import { api, type Note } from "./api";
+import { createLive, idleLiveHandlers, type LiveStatus } from "./live";
 import { mergePendingChanges } from "./pendingChanges";
 import { createSyncQueue, type SyncQueueEvents } from "./syncQueue";
 import {
@@ -58,6 +59,15 @@ const idleEvents: SyncQueueEvents = {
   status: () => {},
 };
 
+// How long a keystroke keeps the tab marked "editing" for the other peers.
+const TYPING_IDLE_MS = 4000;
+
+// A peer is identified only by their email; the chip shows a compact tag.
+function initialsFor(email: string): string {
+  const local = email.split("@")[0] ?? email;
+  return local.slice(0, 2).toUpperCase();
+}
+
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -69,8 +79,13 @@ export default function App() {
   const [conflictedIds, setConflictedIds] = useState<Set<string>>(new Set());
   const [editorRevision, setEditorRevision] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
+  const [liveEditors, setLiveEditors] = useState<Record<string, LiveEditor[]>>(
+    {},
+  );
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>("connecting");
 
   const refreshing = useRef(false);
+  const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The last text the server confirmed for each note, with its version. The
   // visible list can carry unsaved local content, so the merge base an edit
@@ -143,6 +158,10 @@ export default function App() {
   // they are handed over from an effect rather than captured at render.
   const queue = useMemo(() => createSyncQueue(idleEvents), []);
 
+  // The live socket, created once; its handlers arrive from an effect for
+  // the same ref-safety reason as the sync queue's.
+  const live = useMemo(() => createLive(idleLiveHandlers), []);
+
   useEffect(() => {
     queue.setEvents({
       saved: saveLanded,
@@ -161,6 +180,85 @@ export default function App() {
       status: (syncStatus) => setStatus(syncStatus),
     });
   }, [queue, saveLanded]);
+
+  // What the live channel does with what it receives: fold remote note
+  // snapshots into the list and the open editor, react to notes vanishing,
+  // and keep the roster of peers for the presence chips.
+  useEffect(() => {
+    live.setHandlers({
+      note: (remote) => {
+        serverTruth.current.set(remote.id, {
+          content: remote.content,
+          version: remote.version,
+        });
+        setNotes((prev) => {
+          const display = {
+            ...remote,
+            // A local edit still wins on screen; the queue owns that text.
+            content: queue.get(remote.id)?.content ?? remote.content,
+          };
+          if (!prev.some((n) => n.id === remote.id)) {
+            return [display, ...prev];
+          }
+          return prev.map((n) => (n.id === remote.id ? display : n));
+        });
+        if (
+          selectedIdRef.current === remote.id &&
+          !queue.has(remote.id) &&
+          draftRef.current !== remote.content
+        ) {
+          setDraft(remote.content);
+          bumpRevision();
+        }
+      },
+      gone: (id) => {
+        queue.drop(id);
+        dropConflicted(id);
+        setLiveEditors((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setNotes((prev) => prev.filter((n) => n.id !== id));
+        if (selectedIdRef.current === id) {
+          setSelectedId(null);
+          setDraft("");
+          setStatus("idle");
+          setPane("list");
+        }
+      },
+      presence: (noteId, editors) => {
+        setLiveEditors((prev) => ({
+          ...prev,
+          // The roster includes this tab; a chip for yourself is noise.
+          [noteId]: editors.filter((editor) => editor.email !== email),
+        }));
+      },
+      status: setLiveStatus,
+    });
+  }, [live, queue, bumpRevision, dropConflicted, email]);
+
+  // Open the live channel once the identity is known, and follow the open
+  // note: subscribe while it is selected, leave the room when it is not.
+  useEffect(() => {
+    if (!email) return;
+    live.start(email);
+  }, [live, email]);
+
+  useEffect(() => {
+    return () => {
+      live.stop();
+    };
+  }, [live]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    live.subscribe(selectedId);
+    return () => {
+      live.unsubscribe(selectedId);
+    };
+  }, [live, selectedId]);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
@@ -303,6 +401,14 @@ export default function App() {
       server?.version ?? null,
       server?.content ?? null,
     );
+    // Tell the other peers this tab is typing, and fall back to "viewing"
+    // once the keystrokes stop.
+    live.setPresence(selectedId, "editing");
+    if (typingIdle.current) clearTimeout(typingIdle.current);
+    typingIdle.current = setTimeout(() => {
+      typingIdle.current = null;
+      live.setPresence(selectedId, "viewing");
+    }, TYPING_IDLE_MS);
   }
 
   // Resolve a conflict in the user's favour: re-read the server copy, then
@@ -438,6 +544,7 @@ export default function App() {
   }
 
   const selectedNote = notes.find((note) => note.id === selectedId);
+  const peers = selectedId ? (liveEditors[selectedId] ?? []) : [];
   const selectedConflicted =
     selectedId != null && conflictedIds.has(selectedId);
   const canToggle =
@@ -454,6 +561,23 @@ export default function App() {
         <header className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] md:pt-4">
           <h1 className="m-0 text-xl font-semibold">Notes</h1>
           <div className="flex items-center gap-2">
+            <span
+              data-live-status={liveStatus}
+              title={
+                liveStatus === "online"
+                  ? "Live sync connected — changes appear as they happen"
+                  : liveStatus === "connecting"
+                    ? "Connecting live sync…"
+                    : "Live sync offline — edits still sync on save and refresh"
+              }
+              className={`h-2 w-2 flex-none rounded-full ${
+                liveStatus === "online"
+                  ? "bg-emerald-500"
+                  : liveStatus === "connecting"
+                    ? "bg-amber-400"
+                    : "bg-slate-300"
+              }`}
+            />
             {pushSupported() && (
               <button
                 type="button"
@@ -489,7 +613,11 @@ export default function App() {
         ) : (
           <ul className="m-0 flex-1 list-none overflow-y-auto p-0">
             {notes.map((note) => (
-              <li key={note.id} className="relative border-b border-slate-100">
+              <li
+                key={note.id}
+                data-note-id={note.id}
+                className="relative border-b border-slate-100"
+              >
                 <button
                   type="button"
                   className={`flex min-h-16 w-full flex-col gap-0.5 py-3 pl-4 pr-14 text-left ${
@@ -549,6 +677,30 @@ export default function App() {
                 ←
               </button>
               <div className="ml-auto flex items-center gap-3">
+                {peers.length > 0 && (
+                  <div
+                    className="flex items-center -space-x-1.5"
+                    aria-label="Other people in this note"
+                  >
+                    {peers.map((peer) => (
+                      <span
+                        key={peer.email}
+                        title={
+                          peer.state === "editing"
+                            ? `${peer.email} is editing`
+                            : `${peer.email} is viewing`
+                        }
+                        className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-[0.625rem] font-semibold ${
+                          peer.state === "editing"
+                            ? "bg-amber-500 text-white"
+                            : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {initialsFor(peer.email)}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <button
                   type="button"
                   className="flex h-9 flex-none items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[0.8125rem] font-medium text-slate-700 hover:bg-slate-100 active:bg-slate-100 disabled:opacity-40"

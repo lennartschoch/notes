@@ -4,6 +4,7 @@
 // re-implementing a title heuristic next to the component that needs it.
 
 export * from "./merge.js";
+export * from "./live.js";
 
 export function noteTitle(content: string): string {
   const firstLine = content.split("\n").find((line) => line.trim().length > 0);

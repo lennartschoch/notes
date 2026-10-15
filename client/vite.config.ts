@@ -16,6 +16,12 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": "http://localhost:4000",
+      // Live sync. Browsers speak WebSocket to the Vite dev server, which
+      // proxies the upgrade to the notes server.
+      "/ws": {
+        target: "ws://localhost:4000",
+        ws: true,
+      },
       // The MCP endpoint for AI agents; SSE streaming needs to stay open.
       "/mcp": {
         target: "http://localhost:4000",

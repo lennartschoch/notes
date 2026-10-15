@@ -7,6 +7,7 @@ import {
   updateNote as storeUpdateNote,
   type UpdateResult,
 } from "./store.js";
+import { liveNoteChanged, liveNoteGone } from "./ws.js";
 import type { Note, Visibility } from "./types.js";
 
 // The single write path for notes. The REST API and the MCP tools both mutate
@@ -20,6 +21,7 @@ import type { Note, Visibility } from "./types.js";
 function announceSaved(note: Note, editorEmail: string): void {
   if (note.visibility === "public") scheduleNoteChange(note, editorEmail);
   noteChanged(note.id);
+  liveNoteChanged(note.id);
 }
 
 export async function createNote(
@@ -62,7 +64,12 @@ export async function setNoteVisibility(
   email: string,
 ): Promise<Note | undefined> {
   const note = await storeSetNoteVisibility(id, visibility, email);
-  if (note) noteChanged(id);
+  if (note) {
+    noteChanged(id);
+    // Subscribers who just lost sight of the note receive a `gone` from the
+    // hub's per-reader visibility filter.
+    liveNoteChanged(id);
+  }
   return note;
 }
 
@@ -71,6 +78,7 @@ export async function deleteNote(id: string, email: string): Promise<boolean> {
   if (removed) {
     noteRemoved(id);
     noteChanged(id);
+    liveNoteGone(id);
   }
   return removed;
 }

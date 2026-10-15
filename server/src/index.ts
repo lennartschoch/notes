@@ -16,6 +16,7 @@ import {
   updateNote,
 } from "./changes.js";
 import { initNotifier } from "./notifier.js";
+import { initLive } from "./ws.js";
 import { mountMcp } from "./mcp/http.js";
 import {
   getVapid,
@@ -195,6 +196,9 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 await init();
 await initPush();
 initNotifier();
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Notes API listening on http://localhost:${PORT}`);
 });
+// Live sync: the /ws upgrade rides the same HTTP server (and the same
+// Cloudflare Access identity) as the REST API.
+initLive(httpServer);

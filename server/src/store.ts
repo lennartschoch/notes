@@ -33,8 +33,9 @@ function persist(): Promise<void> {
 
 // A note is visible to its owner, to everyone when public, and to everyone
 // when unowned (notes written before ownership existed). Owners are emails
-// taken from the verified Cloudflare Access token.
-function canView(note: Note, email: string): boolean {
+// taken from the verified Cloudflare Access token. Exported so the live hub
+// can filter pushes per reader exactly like the REST reads do.
+export function canView(note: Note, email: string): boolean {
   return (
     note.visibility === "public" || note.owner === "" || note.owner === email
   );
