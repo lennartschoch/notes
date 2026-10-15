@@ -35,6 +35,10 @@ const createNoteBody = z.object({ content: z.string().catch("") });
 const updateNoteBody = z.object({
   content: z.string(),
   version: z.number().int(),
+  // The text the client's edit descends from. Optional: without it a lost
+  // version race stays the plain conflict it always was; with it the server
+  // can merge the two divergent edits (see store.ts).
+  baseContent: z.string().optional(),
 });
 const visibilityBody = z.object({ visibility: z.enum(["private", "public"]) });
 const pushSubscriptionBody = z.object({
@@ -106,6 +110,7 @@ app.put("/api/notes/:id", requireUser, async (req, res) => {
     body.content,
     body.version,
     req.user!.email,
+    body.baseContent,
   );
   if (result.status === "not_found") {
     res.status(404).json({ error: "Note not found" });

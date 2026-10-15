@@ -34,7 +34,16 @@ export interface SyncQueueEvents {
 }
 
 export interface SyncQueue {
-  schedule(id: string, content: string, fallbackVersion: number): void;
+  // The queue is created once, but the UI handlers that render those events
+  // live in React and may need to read refs; setEvents hands the current
+  // handlers to the queue from an effect, outside of render.
+  setEvents(events: SyncQueueEvents): void;
+  schedule(
+    id: string,
+    content: string,
+    fallbackVersion: number,
+    fallbackBaseContent?: string | null,
+  ): void;
   flush(): Promise<void>;
   restore(): PendingChange[];
   get(id: string): PendingChange | undefined;
@@ -43,7 +52,8 @@ export interface SyncQueue {
   hasActive(): boolean;
 }
 
-export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
+export function createSyncQueue(initialEvents: SyncQueueEvents): SyncQueue {
+  let events = initialEvents;
   const pending = new Map<string, PendingChange>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   let flushing = false;
@@ -76,6 +86,7 @@ export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
               id,
               change.content,
               change.baseVersion,
+              change.baseContent,
             );
             const queued = pending.get(id);
             if (queued === change) {
@@ -86,6 +97,18 @@ export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
               // captured the pre-save version. Rebase it onto the version
               // just written, otherwise its own save would falsely conflict.
               queued.baseVersion = updated.version;
+              // Only advance the merge base when this save landed on top of
+              // a quiet server. If the server merged in someone else's text
+              // (updated.content differs from what was sent), the queued
+              // edit still descends from the older ancestor — keeping it
+              // lets the next merge re-apply the other side's text instead
+              // of treating its absence as a deletion.
+              if (
+                queued.baseContent !== null &&
+                updated.content === change.content
+              ) {
+                queued.baseContent = updated.content;
+              }
               savePendingChange(queued);
             }
             events.saved(updated, pending.get(id)?.content ?? updated.content);
@@ -133,6 +156,7 @@ export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
     id: string,
     content: string,
     fallbackVersion: number,
+    fallbackBaseContent: string | null = null,
   ): void {
     const existing = pending.get(id);
     // A quarantined note stays quarantined: keep the latest text locally so
@@ -146,6 +170,9 @@ export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
       id,
       content,
       baseVersion: existing?.baseVersion ?? fallbackVersion,
+      // The edit chain keeps the ancestor it started from: each newer
+      // keystroke descends from the same server text its predecessor did.
+      baseContent: existing?.baseContent ?? fallbackBaseContent,
       status: "pending",
       server: existing?.server ?? null,
       savedAt: new Date().toISOString(),
@@ -179,6 +206,9 @@ export function createSyncQueue(events: SyncQueueEvents): SyncQueue {
   }
 
   return {
+    setEvents: (next) => {
+      events = next;
+    },
     schedule,
     flush,
     restore,

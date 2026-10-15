@@ -3,6 +3,8 @@
 // the whole point of this workspace: import from "shared" rather than
 // re-implementing a title heuristic next to the component that needs it.
 
+export * from "./merge.js";
+
 export function noteTitle(content: string): string {
   const firstLine = content.split("\n").find((line) => line.trim().length > 0);
   const title = (firstLine ?? "").replace(/^\s{0,3}#{1,6}\s+/, "").trim();

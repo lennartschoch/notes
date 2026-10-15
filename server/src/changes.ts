@@ -43,8 +43,15 @@ export async function updateNote(
   content: string,
   version: number,
   email: string,
+  baseContent?: string,
 ): Promise<UpdateResult> {
-  const result = await storeUpdateNote(id, content, version, email);
+  const result = await storeUpdateNote(
+    id,
+    content,
+    version,
+    email,
+    baseContent,
+  );
   if (result.status === "ok") announceSaved(result.note, email);
   return result;
 }

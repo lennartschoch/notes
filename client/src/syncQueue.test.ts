@@ -19,7 +19,7 @@ const storageMap = new Map<string, string>();
 interface Recorded {
   method?: string;
   url: string;
-  body: { content: string; version: number } | undefined;
+  body: { content: string; version: number; baseContent?: string } | undefined;
 }
 
 function note(overrides: Partial<Note> = {}): Note {
@@ -53,6 +53,7 @@ function stubFetch(...responders: { status: number; body?: unknown }[]): {
         ? (JSON.parse(String(init.body)) as {
             content: string;
             version: number;
+            baseContent?: string;
           })
         : undefined,
     });
@@ -180,6 +181,7 @@ test("rebases an edit queued during an in-flight upload", async () => {
         ? (JSON.parse(String(init.body)) as {
             content: string;
             version: number;
+            baseContent?: string;
           })
         : undefined,
     });
@@ -216,4 +218,150 @@ test("rebases an edit queued during an in-flight upload", async () => {
     [0, 1],
   );
   assert.equal(queue.has("n1"), false);
+});
+
+test("setEvents swaps the handlers the queue reports through", async () => {
+  storageMap.clear();
+  stubFetch({ status: 200, body: note({ version: 1 }) });
+  const seen: string[] = [];
+  const queue = createSyncQueue({
+    saved: () => {},
+    conflicted: () => {},
+    noteVersion: () => {},
+    gone: () => {},
+    status: () => {},
+  });
+  queue.setEvents({
+    saved: (savedNote) => seen.push(savedNote.id),
+    conflicted: () => {},
+    noteVersion: () => {},
+    gone: () => {},
+    status: () => {},
+  });
+
+  queue.schedule("n1", "hello", 0);
+  await queue.flush();
+
+  assert.deepEqual(seen, ["n1"]);
+});
+
+test("sends the server text the edit descends from", async () => {
+  storageMap.clear();
+  const { requests } = stubFetch({ status: 200, body: note({ version: 1 }) });
+  const { queue } = collectEvents();
+
+  queue.schedule("n1", "hello", 0, "server");
+  await queue.flush();
+
+  assert.deepEqual(requests[0]?.body, {
+    content: "hello",
+    version: 0,
+    baseContent: "server",
+  });
+});
+
+test("rebasing after a quiet save advances the merge base", async () => {
+  storageMap.clear();
+  let resolveFirst: (value: Response) => void = () => {
+    throw new Error("first request never started");
+  };
+  const requests: Recorded[] = [];
+  (globalThis as Record<string, unknown>).fetch = (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
+    requests.push({
+      method: init?.method,
+      url: String(input),
+      body: init?.body
+        ? (JSON.parse(String(init.body)) as {
+            content: string;
+            version: number;
+            baseContent?: string;
+          })
+        : undefined,
+    });
+    if (requests.length === 1) {
+      return new Promise<Response>((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: "200",
+      json: async () => note({ version: 2 }),
+    } as Response);
+  };
+  const { queue } = collectEvents();
+
+  queue.schedule("n1", "one", 0, "base");
+  const flushing = queue.flush();
+  await Promise.resolve(); // let flush dispatch the first request
+  // A newer edit lands while the first upload is in flight; it descends
+  // from the same server text as its predecessor.
+  queue.schedule("n1", "two", 0);
+  resolveFirst({
+    ok: true,
+    status: 200,
+    statusText: "200",
+    json: async () => note({ version: 1, content: "one" }),
+  } as Response);
+  await flushing;
+
+  // The quiet server took the save as-is, so the ancestor advances to it.
+  assert.equal(requests[1]?.body?.baseContent, "one");
+});
+
+test("rebasing after a merged save keeps the older ancestor", async () => {
+  storageMap.clear();
+  let resolveFirst: (value: Response) => void = () => {
+    throw new Error("first request never started");
+  };
+  const requests: Recorded[] = [];
+  (globalThis as Record<string, unknown>).fetch = (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ) => {
+    requests.push({
+      method: init?.method,
+      url: String(input),
+      body: init?.body
+        ? (JSON.parse(String(init.body)) as {
+            content: string;
+            version: number;
+            baseContent?: string;
+          })
+        : undefined,
+    });
+    if (requests.length === 1) {
+      return new Promise<Response>((resolve) => {
+        resolveFirst = resolve;
+      });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: "200",
+      json: async () => note({ version: 2 }),
+    } as Response);
+  };
+  const { queue } = collectEvents();
+
+  queue.schedule("n1", "two", 0, "base");
+  const flushing = queue.flush();
+  await Promise.resolve();
+  queue.schedule("n1", "three", 0);
+  resolveFirst({
+    ok: true,
+    status: 200,
+    statusText: "200",
+    // The server merged in someone else's text: the reply is not what was
+    // sent. The queued edit still descends from "base", not from this.
+    json: async () => note({ version: 1, content: "merged-with-theirs" }),
+  } as Response);
+  await flushing;
+
+  assert.equal(requests[1]?.body?.baseContent, "base");
+  assert.equal(requests[1]?.body?.version, 1);
 });

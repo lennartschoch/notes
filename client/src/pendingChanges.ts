@@ -6,6 +6,10 @@ export interface PendingChange {
   id: string;
   content: string;
   baseVersion: number;
+  // The server text this edit descends from, when the client ever saw it.
+  // Sent with the upload so a lost version race can be merged instead of
+  // quarantined. null means "unknown" — the old conflict behaviour applies.
+  baseContent: string | null;
   status: PendingStatus;
   server: { content: string; version: number } | null;
   savedAt: string;
@@ -47,6 +51,10 @@ function read(): Record<string, PendingChange> {
         content: candidate.content,
         baseVersion:
           typeof candidate.baseVersion === "number" ? candidate.baseVersion : 0,
+        baseContent:
+          typeof candidate.baseContent === "string"
+            ? candidate.baseContent
+            : null,
         status: candidate.status === "conflicted" ? "conflicted" : "pending",
         server: readServer(candidate.server),
         savedAt:

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { merge3 } from "shared";
 import type { Note, Visibility } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -112,7 +113,7 @@ export async function createNote(content = "", owner: string): Promise<Note> {
 }
 
 export type UpdateResult =
-  | { status: "ok"; note: Note }
+  | { status: "ok"; note: Note; merged?: boolean }
   | { status: "not_found" }
   | { status: "conflict"; note: Note };
 
@@ -121,10 +122,32 @@ export async function updateNote(
   content: string,
   version: number,
   email: string,
+  baseContent?: string,
 ): Promise<UpdateResult> {
   const note = notes.find((n) => n.id === id);
   if (!note || !canEditContent(note, email)) return { status: "not_found" };
-  if (note.version !== version) return { status: "conflict", note };
+  if (note.version !== version) {
+    // The server already holds exactly this text: almost certainly a retry
+    // of our own write whose response was lost. Let it succeed without
+    // burning a version instead of quarantining the client's own edit.
+    if (note.content === content) return { status: "ok", note };
+    // The client also sent the text its edit grew out of, so the two
+    // divergent copies can be merged line by line: only edits that changed
+    // the same lines still lose.
+    if (baseContent !== undefined) {
+      const merge = merge3(baseContent, content, note.content);
+      if (merge.status === "merged") {
+        if (merge.content === note.content) return { status: "ok", note };
+        if (note.owner === "") note.owner = email;
+        note.content = merge.content;
+        note.version += 1;
+        note.updatedAt = new Date().toISOString();
+        await persist();
+        return { status: "ok", note, merged: true };
+      }
+    }
+    return { status: "conflict", note };
+  }
   // Claim a pre-ownership note for the first user to edit it.
   if (note.owner === "") note.owner = email;
   note.content = content;

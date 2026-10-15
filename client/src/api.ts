@@ -51,10 +51,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ content }),
     }),
-  update: (id: string, content: string, version: number) =>
+  update: (
+    id: string,
+    content: string,
+    version: number,
+    baseContent?: string | null,
+  ) =>
     request<Note>(`/notes/${id}`, {
       method: "PUT",
-      body: JSON.stringify({ content, version }),
+      // baseContent is the server text this edit descends from; sending it
+      // lets the server merge instead of bouncing a version conflict. It is
+      // omitted (not blank) when the client never saw that server text.
+      body: JSON.stringify(
+        typeof baseContent === "string"
+          ? { content, version, baseContent }
+          : { content, version },
+      ),
     }),
   setVisibility: (id: string, visibility: Visibility) =>
     request<Note>(`/notes/${id}`, {

@@ -11,7 +11,7 @@ import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
 import { noteTitle } from "shared";
 import { api, type Note } from "./api";
 import { mergePendingChanges } from "./pendingChanges";
-import { createSyncQueue } from "./syncQueue";
+import { createSyncQueue, type SyncQueueEvents } from "./syncQueue";
 import {
   disablePush,
   enablePush,
@@ -48,6 +48,16 @@ function previewFor(content: string): string {
   return rest.slice(0, 80);
 }
 
+// Placeholder events for the queue's first render. Nothing can sync before
+// mount, and the real handlers arrive in the first effect.
+const idleEvents: SyncQueueEvents = {
+  saved: () => {},
+  conflicted: () => {},
+  noteVersion: () => {},
+  gone: () => {},
+  status: () => {},
+};
+
 export default function App() {
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -61,6 +71,21 @@ export default function App() {
   const [pushEnabled, setPushEnabled] = useState(false);
 
   const refreshing = useRef(false);
+
+  // The last text the server confirmed for each note, with its version. The
+  // visible list can carry unsaved local content, so the merge base an edit
+  // descends from has to be remembered apart from what is on screen.
+  const serverTruth = useRef(
+    new Map<string, { content: string; version: number }>(),
+  );
+  const rememberServer = useCallback((list: Note[]) => {
+    for (const note of list) {
+      serverTruth.current.set(note.id, {
+        content: note.content,
+        version: note.version,
+      });
+    }
+  }, []);
 
   const notesRef = useRef(notes);
   const selectedIdRef = useRef(selectedId);
@@ -84,39 +109,65 @@ export default function App() {
     });
   }, []);
 
-  // The offline sync engine. Its events only call stable setters, so it is
-  // created once and survives every re-render.
-  const queue = useMemo(
-    () =>
-      createSyncQueue({
-        saved: (note, displayContent) =>
-          setNotes((prev) =>
-            prev.map((n) =>
-              n.id === note.id ? { ...note, content: displayContent } : n,
-            ),
-          ),
-        conflicted: (id) => setConflictedIds((prev) => new Set(prev).add(id)),
-        noteVersion: (id, version) =>
-          setNotes((prev) =>
-            prev.map((n) => (n.id === id ? { ...n, version } : n)),
-          ),
-        gone: (id) =>
-          setConflictedIds((prev) => {
-            if (!prev.has(id)) return prev;
-            const next = new Set(prev);
-            next.delete(id);
-            return next;
-          }),
-        status: (syncStatus) => setStatus(syncStatus),
-      }),
-    [],
+  // A save landed: remember the server truth, update the list, and pull a
+  // server-side merge into the open editor when nothing newer is queued
+  // waiting behind it.
+  const saveLanded = useCallback(
+    (note: Note, displayContent: string) => {
+      serverTruth.current.set(note.id, {
+        content: note.content,
+        version: note.version,
+      });
+      setNotes((prev) =>
+        prev.map((n) =>
+          n.id === note.id ? { ...note, content: displayContent } : n,
+        ),
+      );
+      // The server may have merged this save with someone else's text. When
+      // nothing newer is queued, that merged text is the truth the next
+      // keystroke edits, so pull it into the open editor.
+      if (
+        selectedIdRef.current === note.id &&
+        displayContent === note.content &&
+        draftRef.current !== note.content
+      ) {
+        setDraft(note.content);
+        bumpRevision();
+      }
+    },
+    [bumpRevision],
   );
+
+  // The offline sync engine, created once and surviving every re-render.
+  // Its handlers read refs (the draft, the selection, the server truth), so
+  // they are handed over from an effect rather than captured at render.
+  const queue = useMemo(() => createSyncQueue(idleEvents), []);
+
+  useEffect(() => {
+    queue.setEvents({
+      saved: saveLanded,
+      conflicted: (id) => setConflictedIds((prev) => new Set(prev).add(id)),
+      noteVersion: (id, version) =>
+        setNotes((prev) =>
+          prev.map((n) => (n.id === id ? { ...n, version } : n)),
+        ),
+      gone: (id) =>
+        setConflictedIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }),
+      status: (syncStatus) => setStatus(syncStatus),
+    });
+  }, [queue, saveLanded]);
 
   const refresh = useCallback(async () => {
     if (refreshing.current) return;
     refreshing.current = true;
     try {
       const list = await api.list();
+      rememberServer(list);
       const selected = selectedIdRef.current;
       // Only push remote content into the open editor when the note has no
       // local edit, otherwise refreshing would stomp what is being typed.
@@ -138,7 +189,7 @@ export default function App() {
     } finally {
       refreshing.current = false;
     }
-  }, [bumpRevision, queue]);
+  }, [bumpRevision, queue, rememberServer]);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +203,7 @@ export default function App() {
       .list()
       .then((list) => {
         if (cancelled) return;
+        rememberServer(list);
         const stored = queue.restore();
         const conflicted = stored.filter(
           (change) => change.status === "conflicted",
@@ -177,7 +229,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [queue]);
+  }, [queue, rememberServer]);
 
   useEffect(() => {
     function handleOnline() {
@@ -241,10 +293,14 @@ export default function App() {
         note.id === selectedId ? { ...note, content: value } : note,
       ),
     );
+    const server = serverTruth.current.get(selectedId);
     queue.schedule(
       selectedId,
       value,
-      notesRef.current.find((note) => note.id === selectedId)?.version ?? 0,
+      server?.version ??
+        notesRef.current.find((note) => note.id === selectedId)?.version ??
+        0,
+      server?.content ?? null,
     );
   }
 
@@ -264,6 +320,10 @@ export default function App() {
           const latest = await api.get(id);
           queue.drop(id);
           dropConflicted(id);
+          serverTruth.current.set(id, {
+            content: latest.content,
+            version: latest.version,
+          });
           setNotes((prev) =>
             prev.map((note) => (note.id === id ? latest : note)),
           );
@@ -299,6 +359,10 @@ export default function App() {
     await queue.flush();
     try {
       const note = await api.create("");
+      serverTruth.current.set(note.id, {
+        content: note.content,
+        version: note.version,
+      });
       setNotes((prev) => [note, ...prev]);
       setSelectedId(note.id);
       setDraft(note.content);
@@ -339,6 +403,10 @@ export default function App() {
     const visibility = note.visibility === "private" ? "public" : "private";
     try {
       const updated = await api.setVisibility(note.id, visibility);
+      serverTruth.current.set(updated.id, {
+        content: updated.content,
+        version: updated.version,
+      });
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
     } catch {
       setStatus("error");
