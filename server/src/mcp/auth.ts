@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import type { JWTPayload } from "jose";
-import { requireUser, verifyAccessToken } from "../auth.js";
+import { authorizeWith, providers } from "../auth.js";
 
 // Identity for the MCP endpoint: the app's own, plus one mapping for machines.
 //
@@ -20,10 +20,6 @@ import { requireUser, verifyAccessToken } from "../auth.js";
 // The token id is required rather than a nicety. Accepting "any service token
 // in this organization" would quietly widen the door the day a second token is
 // created for something else.
-//
-// There is deliberately no second, self-issued credential: one way in, and
-// Cloudflare is the one who checks it.
-
 export type AccessConfig = {
   agentEmail: string;
   serviceTokenId: string;
@@ -62,66 +58,19 @@ export function accountForPayload(
   return config.agentEmail;
 }
 
-// The Access application token, in the header Access sets or — for clients that
-// cannot set that one — as a bearer token. Verified identically either way.
-function accessAssertion(req: Request): string {
-  const header = req.header("cf-access-jwt-assertion") ?? "";
-  if (header.trim().length > 0) return header.trim();
-  const authorization = req.header("authorization") ?? "";
-  if (!/^bearer\s+/i.test(authorization)) return "";
-  return authorization.slice(authorization.indexOf(" ") + 1).trim();
-}
-
-// Whether a payload is a machine rather than a person: a person's Access token
-// always carries an email; a service-token application token does not (its
-// identity is common_name). Since accountForPayload only returns an account for
-// an email or the one pinned token, "no email" is exactly the machine case.
-function isMachinePayload(payload: JWTPayload): boolean {
-  return !(
-    typeof payload.email === "string" && payload.email.trim().length > 0
-  );
-}
-
-export async function requireMcpUser(
+// The MCP identity: the app's own chain, plus the one thing only this endpoint
+// asks for — the operator's mapping from a machine credential to the account it
+// may act as. Which credentials are trusted, and in what order, is not decided
+// here, so a token means the same account over MCP as over the web UI.
+export function requireMcpUser(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const token = accessAssertion(req);
-
-  // No Access token at all: fall back to the app's rules, which is the
-  // x-dev-user-email header only while DEV_USERS=1 and a hard 401 everywhere
-  // else.
-  if (token.length === 0) {
-    await requireUser(req, res, next);
-    // Dev/test only: let the e2e suite drive an agent identity over MCP the same
-    // way it drives two users over REST (an explicit header, DEV_USERS-gated),
-    // since a real service-token JWT is Cloudflare's to mint.
-    if (
-      process.env.DEV_USERS === "1" &&
-      req.user &&
-      req.header("x-dev-agent") === "1"
-    ) {
-      req.user.agent = true;
-    }
-    return;
-  }
-
-  const payload = await verifyAccessToken(token);
-  if (!payload) {
-    res.status(401).json({ error: "Invalid Cloudflare Access token" });
-    return;
-  }
-
-  const account = accountForPayload(payload, accessConfig());
-  if (account.length > 0) {
-    req.user = { email: account, agent: isMachinePayload(payload) };
-    next();
-    return;
-  }
-
-  res.status(401).json({
-    error:
-      "This Access token has no account to act as. A service token must match MCP_SERVICE_TOKEN_ID, and MCP_AGENT_EMAIL must name the account.",
-  });
+  return authorizeWith(
+    providers((payload) => accountForPayload(payload, accessConfig())),
+    req,
+    res,
+    next,
+  );
 }

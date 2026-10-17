@@ -425,24 +425,26 @@ export function initLive(server: HttpServer): void {
       // Malformed request URL: fall through to the rejection below.
     }
     if (path !== "/ws") return; // somebody else's upgrade
-    void identityFromHandshake(req.headers, queryEmail).then((email) => {
-      if (!email) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        const client: Client = {
-          socket: ws,
-          email,
-          notes: new Set(),
-          carets: new Map(),
-          alive: true,
-        };
-        clients.add(client);
-        attach(client);
-      });
-    });
+    void identityFromHandshake({ headers: req.headers, queryEmail }).then(
+      (identity) => {
+        if (!identity) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          const client: Client = {
+            socket: ws,
+            email: identity.email,
+            notes: new Set(),
+            carets: new Map(),
+            alive: true,
+          };
+          clients.add(client);
+          attach(client);
+        });
+      },
+    );
   });
 
   // Drop sockets that stopped answering pings, so dead tabs leave their

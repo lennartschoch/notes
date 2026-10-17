@@ -104,7 +104,11 @@ async function handlePost(req: Request, res: Response): Promise<void> {
   // The identity of this connection, carried into every write it makes: the
   // account alone cannot tell two agents acting as it apart, and presence has to.
   const sessionId = randomUUID();
-  const server = buildMcpServer({ ...actor, sessionId });
+  const server = buildMcpServer({
+    email: actor.email,
+    agent: actor.agent,
+    sessionId,
+  });
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 
