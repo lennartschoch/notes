@@ -28,6 +28,14 @@
 //
 // Everything here is pure string work on the markdown the editor serialises, so
 // the rules of the list can be reasoned about without a live editor.
+//
+// It lives in `shared` because the rule cannot belong to any one surface: the
+// surface that saves a note owns the shape the note ends up in, and that is the
+// server's write path — where a tick from the web editor, from an agent's tools,
+// or from an edit queued offline all arrive at the same place. The web editor
+// runs it too, so ticking an item files it on screen in the same frame rather
+// than after a round-trip. Both callers pass the day their own clock says, and
+// filing text that is already filed changes nothing, so they cannot disagree.
 
 /** Title of a list that was launched without a name. */
 export const DEFAULT_TODO_NAME = "My to-dos";

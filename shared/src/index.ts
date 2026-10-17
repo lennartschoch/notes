@@ -5,6 +5,7 @@
 
 export * from "./merge.js";
 export * from "./live.js";
+export * from "./todo.js";
 
 export function noteTitle(content: string): string {
   const firstLine = content.split("\n").find((line) => line.trim().length > 0);

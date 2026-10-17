@@ -4,8 +4,15 @@ import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LiveCursor } from "shared";
-import { presenceKey } from "shared";
+import {
+  DEFAULT_TODO_NAME,
+  isTodoMarkdown,
+  presenceKey,
+  reconcileTodoMarkdown,
+  startTodoMarkdown,
+  todoDate,
+  type LiveCursor,
+} from "shared";
 import {
   caretAnchor,
   caretColor,
@@ -15,13 +22,6 @@ import {
   type PeerCaret,
 } from "../carets";
 import { EditorToolbar } from "./EditorToolbar";
-import {
-  DEFAULT_TODO_NAME,
-  isTodoMarkdown,
-  reconcileTodoMarkdown,
-  startTodoMarkdown,
-  todoDate,
-} from "./todoList";
 
 const extensions = [
   StarterKit.configure({ link: { openOnClick: false } }),

@@ -11,5 +11,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests are run from source by `npm run test:unit`; they are not part of the
+  // library the server and client import.
+  "exclude": ["src/*.test.ts"]
 }
