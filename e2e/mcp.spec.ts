@@ -67,6 +67,7 @@ test.describe("MCP server", () => {
           "read_note",
           "search_notes",
           "create_note",
+          "type_in_note",
           "update_note",
           "append_to_note",
           "replace_in_note",
@@ -101,7 +102,8 @@ test.describe("MCP server", () => {
 
       const read = await call(client, "read_note", { id });
       expect(out(read)).toContain(title);
-      expect(out(read)).toContain("milk\neggs");
+      // Lines are numbered, because the numbers are what an edit is addressed by.
+      expect(out(read)).toContain("3 | milk\n4 | eggs");
 
       const appended = await call(client, "append_to_note", {
         id,
