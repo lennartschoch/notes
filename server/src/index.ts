@@ -10,6 +10,7 @@ import express, {
 import { z } from "zod";
 import { requireUser } from "./auth.js";
 import { configureApiKeyStore } from "./credentials.js";
+import { corsOptions, allowedOrigins, trustProxySetting } from "./network.js";
 import {
   createNote,
   deleteNote,
@@ -83,7 +84,11 @@ function parseBody<S extends z.ZodType>(
 }
 
 const app = express();
-app.use(cors());
+// How many hops of X-Forwarded-* to believe, and which browsers may call this
+// origin from somewhere else. Both are the operator's to say; both assume the
+// safest thing when they do not (see network.ts).
+app.set("trust proxy", trustProxySetting());
+app.use(cors(corsOptions()));
 // MCP endpoint for AI agents (see MCP.md). Mounted before the body parsers so
 // the streamable-HTTP transport reads its own JSON-RPC bodies.
 mountMcp(app);
@@ -280,6 +285,21 @@ await initPush();
 initNotifier();
 const httpServer = app.listen(PORT, () => {
   console.log(`Notes API listening on http://localhost:${PORT}`);
+  // The two things about the network this app cannot know for itself, printed so
+  // a deployment that got one wrong finds out now rather than through a browser.
+  const origins = allowedOrigins();
+  const proxy = trustProxySetting();
+  console.log(
+    `  browsers: ${
+      origins.length > 0
+        ? `cross-origin calls allowed from ${origins.join(", ")}`
+        : "same-origin only"
+    }; proxy: ${
+      proxy === false
+        ? "not trusted (set TRUST_PROXY behind a reverse proxy)"
+        : `trusted (${String(proxy)})`
+    }`,
+  );
 });
 // Live sync: the /ws upgrade rides the same HTTP server (and the same
 // Cloudflare Access identity) as the REST API.
