@@ -166,6 +166,18 @@ test("push notifications honour quiet period, cooldown and authorship", async ({
       expect(res.status()).toBe(204);
     });
 
+    // Drain residual state before measuring. The whole suite shares one server,
+    // so the notifier may still hold a quiet-period timer armed by an *earlier*
+    // spec's public-note edit (which had no subscriber then). The instant this
+    // spec subscribes, that stale timer can deliver into the counts below and
+    // break them. Wait past one quiet period so any such notification lands — a
+    // note then enters its own cooldown and cannot refire mid-test — and clear
+    // the buffer to start from a known-zero baseline.
+    await test.step("drains notifications from earlier specs", async () => {
+      await new Promise((resolve) => setTimeout(resolve, QUIET_MS * 4));
+      deliveries.length = 0;
+    });
+
     let noteId = "";
     let version = 0;
 
