@@ -35,7 +35,10 @@ export function notePreview(content: string, maxChars = 100): string {
   return `${text.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
-function escapeRegExp(value: string): string {
+// Quotes a string so a regular expression looks for it as written: the brackets
+// of a checkbox are brackets, not a character class. Exported because a plain
+// search and a plain find/replace both need it, and cannot agree by accident.
+export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 

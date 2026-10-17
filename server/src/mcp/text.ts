@@ -7,6 +7,8 @@
 //
 // All of it is pure: text and a caret in, text and a caret out.
 
+import { escapeRegExp } from "shared";
+
 // The caret, addressed the way an agent reads a note: `text` names the words it
 // wants to sit next to, `line`/`column` are the numbers read_note prints (a
 // heading counts as a line), `offset` counts characters from the start.
@@ -46,10 +48,6 @@ function occurrences(content: string, text: string): number[] {
 interface Hit {
   at: number;
   text: string;
-}
-
-function escapeRegExp(word: string): string {
-  return word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Every occurrence of `text` in the note's own coordinates. An exact search

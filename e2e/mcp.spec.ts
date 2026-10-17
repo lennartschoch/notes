@@ -237,6 +237,64 @@ test.describe("MCP server", () => {
     }
   });
 
+  test("matches a plain find as written, and a pattern only when asked", async () => {
+    // Ticking a box means quoting a line that is nothing but characters a
+    // regular expression would read as syntax, so "find this text" has to mean
+    // the text — and a replacement that quotes money has to keep its `$`.
+    const client = await connectAs(ALICE);
+    try {
+      const created = await call(client, "create_note", {
+        content: `Plain find ${run}\n\n- [ ] fix the lamp\n- price: $10\n`,
+      });
+      const id = noteId(out(created));
+
+      expect(
+        out(
+          await call(client, "replace_in_note", {
+            id,
+            find: "- [ ] fix the lamp",
+            replacement: "- [x] fix the lamp",
+          }),
+        ),
+      ).toContain("\u2192 v1");
+      expect(out(await call(client, "read_note", { id }))).toContain(
+        "- [x] fix the lamp",
+      );
+
+      expect(
+        out(
+          await call(client, "replace_in_note", {
+            id,
+            find: "price: $10",
+            replacement: "price: $20",
+          }),
+        ),
+      ).toContain("\u2192 v2");
+      expect(out(await call(client, "read_note", { id }))).toContain(
+        "price: $20",
+      );
+
+      // An opt-in pattern still behaves like one.
+      expect(
+        out(
+          await call(client, "replace_in_note", {
+            id,
+            find: "\\[x\\] fix",
+            replacement: "[x] mend",
+            regex: true,
+          }),
+        ),
+      ).toContain("\u2192 v3");
+      expect(out(await call(client, "read_note", { id }))).toContain(
+        "- [x] mend the lamp",
+      );
+
+      await call(client, "delete_note", { id });
+    } finally {
+      await client.close();
+    }
+  });
+
   test("tells another open session that notes changed", async () => {
     const alice = await connectAs(ALICE);
     const bob = await connectAs(BOB);

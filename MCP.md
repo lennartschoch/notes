@@ -112,19 +112,19 @@ must resolve to one.
 
 ## Tools
 
-| Tool                  | What it does                                                                       |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| `whoami`              | Which user this connection acts as, and how many notes that can see                |
-| `list_notes`          | Titles, ids, visibility and versions, newest first (`limit`/`offset`/`visibility`) |
-| `read_note`           | One note as numbered lines, a page at a time (`from`/`lines`)                      |
-| `search_notes`        | Matching lines inside visible notes, plain text or regex, with context lines       |
-| `create_note`         | New note from markdown (`title`, `visibility`)                                     |
-| `type_in_note`        | Types at the agent's caret: words, one word, pasted text, a link                   |
-| `update_note`         | Replace a whole note                                                               |
-| `append_to_note`      | Add markdown to the end, optionally under a new `##` heading                       |
-| `replace_in_note`     | Find/replace inside a note, single match unless `all` is set                       |
-| `set_note_visibility` | Private ↔ public (owner only)                                                      |
-| `delete_note`         | Delete permanently (owner only)                                                    |
+| Tool                  | What it does                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| `whoami`              | Which user this connection acts as, and how many notes that can see                               |
+| `list_notes`          | Titles, ids, visibility and versions, newest first (`limit`/`offset`/`visibility`)                |
+| `read_note`           | One note as numbered lines, a page at a time (`from`/`lines`)                                     |
+| `search_notes`        | Matching lines inside visible notes, plain text or regex, with context lines                      |
+| `create_note`         | New note from markdown (`title`, `visibility`)                                                    |
+| `type_in_note`        | Types at the agent's caret: words, one word, pasted text, a link                                  |
+| `update_note`         | Replace a whole note                                                                              |
+| `append_to_note`      | Add markdown to the end, optionally under a new `##` heading                                      |
+| `replace_in_note`     | Find/replace inside a note as plain text (`regex`) or a pattern, single match unless `all` is set |
+| `set_note_visibility` | Private ↔ public (owner only)                                                                     |
+| `delete_note`         | Delete permanently (owner only)                                                                   |
 
 Permissions are the app's, enforced per call: everyone who can see a note may
 edit it, only the owner may change visibility or delete it. Editing a public
@@ -163,7 +163,10 @@ its change instead of clobbering it. Omitting the version writes against whateve
 is newest — fine for a note nobody else is in, risky in a shared one.
 
 `replace_in_note` additionally refuses a find that matches several times (unless
-`all: true`) and one that matches nothing, so a partial edit never lands.
+`all: true`) and one that matches nothing, so a partial edit never lands. A find
+without `regex` is matched as written — the brackets of a checkbox are brackets,
+and a `$` in a replacement is a dollar sign — so ticking a box by quoting its own
+line is an exact edit, not a pattern that happens to look like one.
 
 A refused local edit is cheap to retry: `type_in_note`, `append_to_note` and
 `replace_in_note` build their text from the note as it stands when the call runs,

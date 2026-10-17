@@ -1,6 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { noteTitle, searchContent, type SearchResults } from "shared";
+import {
+  noteTitle,
+  searchContent,
+  escapeRegExp,
+  type SearchResults,
+} from "shared";
 import { listLines, metaLine, readNote, stamp } from "./format.js";
 import {
   createNote,
@@ -655,7 +660,12 @@ export function registerTools(server: McpServer, actor: Actor): void {
 
       let pattern: RegExp;
       try {
-        pattern = new RegExp(find, regex ? "gms" : "g");
+        // A plain find is the words themselves, so `[ ]` is a checkbox rather
+        // than a character class; only `regex: true` compiles them as a pattern.
+        pattern = new RegExp(
+          regex ? find : escapeRegExp(find),
+          regex ? "gms" : "g",
+        );
       } catch (error) {
         return fail(`Invalid regular expression: ${(error as Error).message}`);
       }
@@ -673,8 +683,11 @@ export function registerTools(server: McpServer, actor: Actor): void {
       }
 
       // `replace` with the global flag rewrites every match; when a single
-      // match was required there is exactly one to rewrite.
-      const updated = note.content.replace(pattern, replacement);
+      // match was required there is exactly one to rewrite. A plain replacement
+      // is text, not a pattern, so a `$` in it stays a dollar sign.
+      const updated = regex
+        ? note.content.replace(pattern, replacement)
+        : note.content.replace(pattern, () => replacement);
       // Where the change ends, so the caret lands on it: the end of the last
       // thing replaced. Offsets shift as earlier replacements change the length,
       // and a capture-group replacement is longer or shorter than the words it
