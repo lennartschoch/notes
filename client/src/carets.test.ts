@@ -63,6 +63,34 @@ test("an out-of-bounds position on a matching version is corrected", () => {
   assert.equal(resolveCaretPosition(caret(size + 9, "", 4), d, 4), size);
 });
 
+test("an agent's caret is placed by its anchor, not by its offset", () => {
+  // An agent counts characters of markdown, this document counts editor
+  // positions, so the two numbers mean different things even at the same version.
+  const d = doc(["- buy milk", "- walk the dog"]);
+  const agentCaret: LiveCursor = {
+    email: "bob@test",
+    agent: true,
+    position: 24,
+    anchor: "walk the dog",
+    version: 3,
+  };
+  const found = resolveCaretPosition(agentCaret, d, 3);
+  assert.equal(found, positionOfText(d, "walk the dog"));
+  assert.notEqual(found, agentCaret.position);
+});
+
+test("an agent's caret with nothing to find clamps to the document", () => {
+  const d = doc(["short"]);
+  const lost: LiveCursor = {
+    email: "bob@test",
+    agent: true,
+    position: 900,
+    anchor: "gone entirely",
+    version: 3,
+  };
+  assert.equal(resolveCaretPosition(lost, d, 3), d.content.size);
+});
+
 test("a cleared caret resolves to nothing", () => {
   assert.equal(resolveCaretPosition(caret(null), doc(["x"]), 1), null);
 });

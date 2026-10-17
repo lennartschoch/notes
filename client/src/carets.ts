@@ -49,6 +49,11 @@ export function positionOfText(doc: TextDoc, anchor: string): number | null {
 // Which document position a peer's caret refers to: trusted outright when
 // both copies still sit at the same version, otherwise relocated by the
 // text it sits behind, and clamped to the document as a last resort.
+//
+// An agent's caret is never trusted outright: it counts characters of markdown,
+// where this document counts editor positions, so the two numbers mean different
+// things even when both copies sit at the same version. The anchor text is the
+// only address they share.
 export function resolveCaretPosition(
   caret: LiveCursor,
   doc: TextDoc,
@@ -56,6 +61,10 @@ export function resolveCaretPosition(
 ): number | null {
   if (caret.position === null) return null;
   const size = doc.content.size;
+  if (caret.agent === true) {
+    const placed = positionOfText(doc, caret.anchor);
+    return placed ?? Math.min(caret.position, size);
+  }
   if (
     caret.version === ourVersion &&
     caret.version >= 0 &&

@@ -41,10 +41,36 @@ export function presenceKey(email: string, agent?: boolean): string {
 // the two copies of the note have drifted apart.
 export const CARET_ANCHOR_CHARS = 24;
 
+// The last line of a piece of text, at most CARET_ANCHOR_CHARS of it — an
+// anchor is text the editor can find, and on screen block boundaries are not
+// characters.
+function lineTail(text: string): string {
+  const clipped = text.slice(Math.max(0, text.length - CARET_ANCHOR_CHARS));
+  return clipped.slice(clipped.lastIndexOf("\n") + 1);
+}
+
+// The text a caret sits behind, taken from a plain-text copy of the note — the
+// shape an agent has: it holds markdown, not an editor document, so it has no
+// positions to speak of. Receivers relocate an agent's caret with this text
+// (see LiveCursor), so it must be findable: never reaching across a line break,
+// and never merely whitespace. A caret at the start of a line sits at the end of
+// the previous one, so it anchors there.
+export function anchorFromText(text: string, caret: number): string {
+  const at = Math.max(0, Math.min(Math.trunc(caret), text.length));
+  const current = lineTail(text.slice(0, at));
+  if (current.trim().length > 0) return current;
+  return lineTail(text.slice(0, at - current.length).replace(/\s+$/, ""));
+}
+
 // Where one editor's caret sits. `position` counts characters in the
 // sender's copy of the note as `version`; receivers whose copy differs
 // relocate the caret by looking for `anchor` (the text just before it).
 // A null position is a deliberate clearing of that peer's caret.
+//
+// Positions are only comparable between peers that measure the same way, and an
+// agent cannot: it counts characters of markdown, a tab counts editor positions.
+// So `agent` carets always relocate by their anchor instead of trusting a number
+// from another coordinate system (see resolveCaretPosition).
 export interface LiveCursor {
   email: string;
   // Set when an agent is driving this caret (see LiveEditor.agent).
