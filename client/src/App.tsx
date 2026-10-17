@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
-import { noteTitle, type LiveEditor } from "shared";
+import { noteTitle, type LiveCursor, type LiveEditor } from "shared";
 import { api, type Note } from "./api";
 import { createLive, idleLiveHandlers, type LiveStatus } from "./live";
 import { mergePendingChanges } from "./pendingChanges";
@@ -80,6 +80,11 @@ export default function App() {
   const [editorRevision, setEditorRevision] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
   const [liveEditors, setLiveEditors] = useState<Record<string, LiveEditor[]>>(
+    {},
+  );
+  // Where each peer's caret is, per note. Purely ephemeral: nothing is
+  // drawn from it until a second tab is in the same note.
+  const [liveCarets, setLiveCarets] = useState<Record<string, LiveCursor[]>>(
     {},
   );
   const [liveStatus, setLiveStatus] = useState<LiveStatus>("connecting");
@@ -220,6 +225,12 @@ export default function App() {
           delete next[id];
           return next;
         });
+        setLiveCarets((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
         setNotes((prev) => prev.filter((n) => n.id !== id));
         if (selectedIdRef.current === id) {
           setSelectedId(null);
@@ -229,11 +240,33 @@ export default function App() {
         }
       },
       presence: (noteId, editors) => {
+        const peers = editors.filter((editor) => editor.email !== email);
         setLiveEditors((prev) => ({
           ...prev,
           // The roster includes this tab; a chip for yourself is noise.
-          [noteId]: editors.filter((editor) => editor.email !== email),
+          [noteId]: peers,
         }));
+        // A peer can only have a caret if they are in the room; pruning here
+        // sweeps up any clear that was missed while this tab was reconnecting.
+        const stillHere = new Set(peers.map((peer) => peer.email));
+        setLiveCarets((prev) => {
+          const inNote = prev[noteId];
+          if (!inNote) return prev;
+          const kept = inNote.filter((caret) => stillHere.has(caret.email));
+          if (kept.length === inNote.length) return prev;
+          return { ...prev, [noteId]: kept };
+        });
+      },
+      cursor: (noteId, cursor) => {
+        setLiveCarets((prev) => {
+          const others = (prev[noteId] ?? []).filter(
+            (caret) => caret.email !== cursor.email,
+          );
+          return {
+            ...prev,
+            [noteId]: cursor.position === null ? others : [...others, cursor],
+          };
+        });
       },
       status: setLiveStatus,
     });
@@ -257,6 +290,14 @@ export default function App() {
     live.subscribe(selectedId);
     return () => {
       live.unsubscribe(selectedId);
+      // Leaving the note leaves its carets behind; reopening fetches fresh
+      // ones as peers keep editing.
+      setLiveCarets((prev) => {
+        if (!(selectedId in prev)) return prev;
+        const next = { ...prev };
+        delete next[selectedId];
+        return next;
+      });
     };
   }, [live, selectedId]);
 
@@ -763,7 +804,12 @@ export default function App() {
                 noteId={selectedId}
                 initialMarkdown={draft}
                 revision={editorRevision}
+                version={selectedNote?.version ?? 0}
+                carets={selectedId ? (liveCarets[selectedId] ?? []) : []}
                 onChange={handleChange}
+                onCursor={(cursor) => {
+                  if (selectedId) live.setCursor(selectedId, cursor);
+                }}
               />
             </Suspense>
           </>

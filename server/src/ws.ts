@@ -2,7 +2,9 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import {
+  CARET_ANCHOR_CHARS,
   type LiveClientMessage,
+  type LiveCursor,
   type LiveEditor,
   type LiveNoteSnapshot,
   type LiveServerMessage,
@@ -24,6 +26,9 @@ interface Client {
   socket: WebSocket;
   email: string;
   notes: Set<string>;
+  // Each note where this client has published a caret, kept so late joiners
+  // see it too, and so leaving can clear it.
+  carets: Map<string, Omit<LiveCursor, "email">>;
   alive: boolean;
 }
 
@@ -85,6 +90,56 @@ function forget(client: Client, noteId: string): void {
   const inRoom = presence.get(noteId);
   if (inRoom?.delete(client)) broadcastPresence(noteId);
   rooms.get(noteId)?.delete(client);
+  // A peer that vanishes mid-edit must not leave a ghost caret behind.
+  if (client.carets.delete(noteId)) {
+    broadcastCursor(noteId, null, client.email, {
+      position: null,
+      anchor: "",
+      version: 0,
+    });
+  }
+}
+
+// Carets are ephemeral: relayed to the rest of the room, never persisted,
+// versioned, or replayed across reconnects — but held long enough to hand to
+// the next person who opens the note. The sender is skipped by identity, not
+// by email, so a second tab of the same person still sees this tab's caret.
+function broadcastCursor(
+  noteId: string,
+  sender: Client | null,
+  email: string,
+  cursor: Omit<LiveCursor, "email">,
+): void {
+  for (const peer of rooms.get(noteId) ?? []) {
+    if (peer === sender) continue;
+    send(peer, { type: "cursor", noteId, cursor: { email, ...cursor } });
+  }
+}
+
+function handleCursor(
+  client: Client,
+  message: Extract<LiveClientMessage, { type: "cursor" }>,
+): void {
+  if (!client.notes.has(message.noteId)) return;
+  const position =
+    typeof message.position === "number" &&
+    Number.isInteger(message.position) &&
+    message.position >= 0
+      ? message.position
+      : null;
+  const cursor: Omit<LiveCursor, "email"> =
+    position === null
+      ? { position: null, anchor: "", version: 0 }
+      : {
+          position,
+          anchor: String(message.anchor ?? "").slice(0, CARET_ANCHOR_CHARS),
+          version: Number.isFinite(message.version)
+            ? Math.max(0, Math.trunc(message.version))
+            : 0,
+        };
+  if (position === null) client.carets.delete(message.noteId);
+  else client.carets.set(message.noteId, cursor);
+  broadcastCursor(message.noteId, client, client.email, cursor);
 }
 
 // Push the note's current state to every subscriber that may see it. Called
@@ -134,10 +189,24 @@ function attach(client: Client): void {
       }
       room.add(client);
       setPresence(client, message.noteId, "viewing");
+      // Carets already in the room belong to the joiner's eyes too; the
+      // live relay only ever reaches clients present at the time.
+      for (const peer of room) {
+        const caret = peer.carets.get(message.noteId);
+        if (caret) {
+          send(client, {
+            type: "cursor",
+            noteId: message.noteId,
+            cursor: { email: peer.email, ...caret },
+          });
+        }
+      }
     } else if (message.type === "unsubscribe") {
       forget(client, message.noteId);
     } else if (message.type === "presence") {
       setPresence(client, message.noteId, message.state);
+    } else if (message.type === "cursor") {
+      handleCursor(client, message);
     }
   });
   client.socket.on("close", () => {
@@ -175,6 +244,7 @@ export function initLive(server: HttpServer): void {
           socket: ws,
           email,
           notes: new Set(),
+          carets: new Map(),
           alive: true,
         };
         clients.add(client);

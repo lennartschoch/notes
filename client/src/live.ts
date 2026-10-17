@@ -1,5 +1,6 @@
 import type {
   LiveClientMessage,
+  LiveCursor,
   LiveEditor,
   LiveNoteSnapshot,
   LiveServerMessage,
@@ -19,6 +20,7 @@ export interface LiveHandlers {
   note(note: LiveNoteSnapshot): void;
   gone(noteId: string): void;
   presence(noteId: string, editors: LiveEditor[]): void;
+  cursor(noteId: string, cursor: LiveCursor): void;
   status(status: LiveStatus): void;
 }
 
@@ -28,6 +30,7 @@ export const idleLiveHandlers: LiveHandlers = {
   note: () => {},
   gone: () => {},
   presence: () => {},
+  cursor: () => {},
   status: () => {},
 };
 
@@ -40,6 +43,12 @@ export interface LiveSocket {
   subscribe(noteId: string): void;
   unsubscribe(noteId: string): void;
   setPresence(noteId: string, state: PresenceState): void;
+  // Where the local caret moved; null clears it. Ephemeral, never replayed
+  // after a reconnect — the next keystroke re-publishes it.
+  setCursor(
+    noteId: string,
+    cursor: { position: number; anchor: string; version: number } | null,
+  ): void;
 }
 
 const MIN_BACKOFF_MS = 500;
@@ -90,6 +99,8 @@ export function createLive(initialHandlers: LiveHandlers): LiveSocket {
       else if (message.type === "gone") handlers.gone(message.noteId);
       else if (message.type === "presence")
         handlers.presence(message.noteId, message.editors);
+      else if (message.type === "cursor")
+        handlers.cursor(message.noteId, message.cursor);
     };
     ws.onclose = () => {
       if (socket !== ws) return;
@@ -140,6 +151,20 @@ export function createLive(initialHandlers: LiveHandlers): LiveSocket {
       if (subscriptions.get(noteId) === state) return;
       subscriptions.set(noteId, state);
       send({ type: "presence", noteId, state });
+    },
+    setCursor: (noteId, cursor) => {
+      if (!subscriptions.has(noteId)) return;
+      if (!cursor) {
+        send({
+          type: "cursor",
+          noteId,
+          position: null,
+          anchor: "",
+          version: 0,
+        });
+        return;
+      }
+      send({ type: "cursor", noteId, ...cursor });
     },
   };
 }

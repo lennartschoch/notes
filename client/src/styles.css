@@ -15,6 +15,28 @@
   }
 }
 
+/* Remote editor caret: a thin line placed with translate(), pulsing gently
+   while its person is idle. Position updates ride the transform, so moving
+   carets glide instead of jumping. */
+.remote-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 2px;
+  pointer-events: none;
+  transition: transform 120ms ease-out;
+  will-change: transform;
+  animation: remote-caret-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes remote-caret-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 /* TipTap placeholder (cannot be expressed as a utility). */
 .tiptap p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
