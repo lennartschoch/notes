@@ -166,6 +166,27 @@ verified by signature or by hash, never by which network the request came from. 
 `cf-access-jwt-assertion` header that reaches the origin without Cloudflare's
 signature behind it is not an identity, it is a 401.
 
+Two settings decide what the app believes about the wires, and both answer the
+safest thing when they are left alone:
+
+- **`CORS_ALLOW_ORIGINS`** — unset, which means the API answers no cross-origin
+  browser request at all. Every deployment this app has serves the client, the
+  REST API, the live channel and `/mcp` from one origin — Vite proxies all four in
+  development — so nothing needs it. It exists for a browser-based MCP client on
+  another port: name that origin and the inspector works. Agents that are not
+  browsers never needed it; CORS is a rule browsers enforce, and it has never
+  stopped a terminal. `*` is not accepted, and credentials are refused whatever is
+  allow-listed.
+- **`TRUST_PROXY`** — unset, which means `X-Forwarded-For` and `X-Forwarded-Proto`
+  are ignored, because a request that arrives directly can claim anything. Set it
+  to the number of hops in front of the app (`1` for Caddy, Traefik or nginx, `2`
+  for a tunnel and a proxy), or to the addresses worth believing. Until it is set,
+  an app behind a proxy believes it is plain HTTP — which matters as soon as the
+  app must decide whether a cookie may be marked `Secure`.
+
+The boot line prints both, so a deployment that has one wrong hears it once, out
+loud, rather than finding out through a browser.
+
 ## Tools
 
 | Tool                  | What it does                                                                                      |
@@ -308,6 +329,9 @@ when a note goes stale.
 | `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                        |
 | `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                 |
 | `MCP_SERVICE_TOKEN_ID` | unset     | Service token Client ID the mapping accepts          |
+| `API_KEYS_DATA_FILE`   | unset     | Where API keys live — hashes only                    |
+| `CORS_ALLOW_ORIGINS`   | unset     | Other browser origins allowed to call the API        |
+| `TRUST_PROXY`          | unset     | Hops of X-Forwarded-* to believe, e.g. 1             |
 
 Sessions are in memory: restarting the server drops them and clients re-run the
 `initialize` handshake. Sessions whose client disappears are closed by the idle
