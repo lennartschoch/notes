@@ -116,9 +116,10 @@ must resolve to one.
 | --------------------- | ---------------------------------------------------------------------------------- |
 | `whoami`              | Which user this connection acts as, and how many notes that can see                |
 | `list_notes`          | Titles, ids, visibility and versions, newest first (`limit`/`offset`/`visibility`) |
-| `read_note`           | One note in full: markdown plus metadata                                           |
+| `read_note`           | One note as numbered lines, a page at a time (`from`/`lines`)                      |
 | `search_notes`        | Matching lines inside visible notes, plain text or regex, with context lines       |
 | `create_note`         | New note from markdown (`title`, `visibility`)                                     |
+| `type_in_note`        | Types at the agent's caret: words, one word, pasted text, a link                   |
 | `update_note`         | Replace a whole note                                                               |
 | `append_to_note`      | Add markdown to the end, optionally under a new `##` heading                       |
 | `replace_in_note`     | Find/replace inside a note, single match unless `all` is set                       |
@@ -131,6 +132,28 @@ note fires the same browser-push notifications a web edit does.
 
 Notes are markdown, the same documents the web editor writes.
 
+## Reading and typing where a person would
+
+`read_note` prints a note the way an editor prints a file - `3 | - buy milk` -
+and those numbers are addresses: `line`, `column`, `after` and `before` take them
+back. A long note arrives a page at a time, and the answer says which lines
+follow. The numbers are not part of the text, so an agent quoting words to
+`replace_in_note` quotes what comes after the gutter.
+
+That shape exists so writes can be small. `type_in_note` types at a caret instead
+of restating a document: `after: "buy milk"` with `text: " and eggs"` puts those
+words there, a newline in `text` is the Enter key (a list grows an item with the
+same marker, prose gets a paragraph), and a backspace deletes. It cannot rewrite
+the lines around it, which is the point: an agent cannot break a paragraph it
+meant to leave alone. And a note that already says exactly that is not saved
+again just to burn a version.
+
+Text the agent was handed - `word`, `paste` - is content, not formatting. A
+markdown link inside it is written out as its words and its address rather than
+becoming clickable, so words from an untrusted page cannot put a lie in front of
+a person; a link that is meant to be one arrives through `link`, whose address is
+checked (`http`, `https`, `mailto`).
+
 ## Versions, not overwrites
 
 Every note carries a `version`, printed by every read, list and search. A write
@@ -141,6 +164,12 @@ is newest — fine for a note nobody else is in, risky in a shared one.
 
 `replace_in_note` additionally refuses a find that matches several times (unless
 `all: true`) and one that matches nothing, so a partial edit never lands.
+
+A refused local edit is cheap to retry: `type_in_note`, `append_to_note` and
+`replace_in_note` build their text from the note as it stands when the call runs,
+so sending the same call again without a version applies the change to the new
+text. A whole-document `update_note` deliberately gets no such advice - re-sending
+it would overwrite whatever the other person wrote.
 
 ## Being seen as an agent
 
@@ -153,11 +182,16 @@ marks it as an agent and surfaces that everywhere people look:
   `Updated by you@example.com`. And because that edit was _not_ the person
   typing, it does **not** count as their own change — they are still notified
   when their agent edits a shared note.
-- **Live presence** — the header chip and the remote caret — shows
-  _"you@example.com's agent is editing"_ as a peer **distinct from the person's
-  own tab**, even though both act as the same email. An agent's write is echoed
-  into the note's room as a short-lived presence that fades a little after the
-  agent stops (agents emit no typing/idle signal).
+- **Live presence** — the header chip and the remote caret — shows an agent
+  as a peer **distinct from the person's own tab**, even though both act as the
+  same email. Its caret sits where it is working: reading leaves it at the end of
+  what was read, typing moves it to the words just typed, and the chip says
+  `is viewing` or `is editing`. An agent has no cursor to hold a place with, so
+  the server remembers one per note for the life of the session, and follows it
+  along when the note changes underneath it.
+- An agent leaves a note by going quiet: the chip falls back to `is viewing` a
+  little after its last keystroke, and the caret goes a while after that. Closing
+  the connection takes its carets out of every note at once.
 - `whoami` reports `Acting as you@example.com (AI agent)`.
 
 The label is always rendered by this app from the account email plus a boolean
@@ -169,7 +203,8 @@ present itself as a person or as a different account.
 Clients that attach context instead of calling tools get the same data:
 
 - `notes://index` — every visible note with title, id, visibility and version
-- `note://{id}` — one note as markdown
+- `note://{id}` — one note as markdown, whole and unnumbered: resources are
+  context to attach, not a window to work from, so they carry no caret
 
 After any change, every open session is told (`notifications/resources/updated`
 plus a resource list change), so an agent that keeps the index attached learns
@@ -197,10 +232,13 @@ server/src/mcp/http.ts        routes, session handshake, session lifecycle
 server/src/mcp/auth.ts        identity: Access JWT, bearer token, service-token mapping
 server/src/mcp/server.ts      one McpServer per session + client instructions
 server/src/mcp/tools.ts       the tools, on the same store module as the REST API
+server/src/mcp/text.ts        caret maths and keystrokes, in plain markdown
+server/src/mcp/cursor.ts      where each session's caret is, and saying so
 server/src/mcp/resources.ts   notes://index and note://{id}
 server/src/mcp/hub.ts         live session registry and change notifications
 server/src/mcp/format.ts      how a note is rendered as text
 ```
 
-Covered by `e2e/mcp.spec.ts` (`npm run test:e2e`), which drives the endpoint with
-a real MCP client over two identities.
+Covered by `e2e/mcp.spec.ts`, `e2e/mcp-identity.spec.ts` and
+`e2e/agent-cursor.spec.ts` (`npm run test:e2e`), which drive the endpoint with a
+real MCP client over two identities while a browser watches the caret.
