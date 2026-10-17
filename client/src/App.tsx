@@ -7,7 +7,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { AlertTriangle, Bell, BellOff, Bot, Globe, Lock } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  BellOff,
+  Bot,
+  Globe,
+  KeyRound,
+  Lock,
+} from "lucide-react";
 import {
   noteTitle,
   presenceKey,
@@ -15,6 +23,7 @@ import {
   type LiveEditor,
 } from "shared";
 import { api, type Note } from "./api";
+import AgentKeys from "./components/AgentKeys";
 import { caretLabel } from "./carets";
 import { createLive, idleLiveHandlers, type LiveStatus } from "./live";
 import { mergePendingChanges } from "./pendingChanges";
@@ -96,6 +105,8 @@ export default function App() {
     {},
   );
   const [liveStatus, setLiveStatus] = useState<LiveStatus>("connecting");
+  // The account's own agent keys, in a panel nobody else can see.
+  const [keysOpen, setKeysOpen] = useState(false);
 
   const refreshing = useRef(false);
   const typingIdle = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -658,6 +669,15 @@ export default function App() {
             )}
             <button
               type="button"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100 active:bg-slate-100"
+              onClick={() => setKeysOpen(true)}
+              aria-label="Agent keys"
+              title="Agent keys — let an AI agent work in your notes"
+            >
+              <KeyRound size={18} />
+            </button>
+            <button
+              type="button"
               className="min-h-10 rounded-lg bg-slate-900 px-4 py-2 text-[0.9375rem] font-medium text-white hover:bg-slate-700 active:bg-slate-700"
               onClick={createNote}
             >
@@ -847,6 +867,8 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {keysOpen && <AgentKeys onClose={() => setKeysOpen(false)} />}
     </div>
   );
 }

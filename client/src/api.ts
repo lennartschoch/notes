@@ -10,6 +10,17 @@ export interface Note {
   updatedAt: string;
 }
 
+// One of the account's own API keys, as the list shows it: enough to recognise a
+// key, not enough to use one. The secret itself arrives once, from the call that
+// makes it, and is stored nowhere readable.
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  hint: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -85,4 +96,11 @@ export const api = {
       method: "DELETE",
       body: JSON.stringify({ endpoint }),
     }),
+  listKeys: () => request<ApiKeyInfo[]>("/keys"),
+  createKey: (name: string) =>
+    request<{ key: ApiKeyInfo; secret: string }>("/keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  revokeKey: (id: string) => request<void>(`/keys/${id}`, { method: "DELETE" }),
 };
