@@ -122,6 +122,7 @@ async function handlePost(req: Request, res: Response): Promise<void> {
       transport,
       email: actor.email,
       agent: actor.agent,
+      keyId: actor.keyId,
       openedAt: Date.now(),
       lastSeenAt: Date.now(),
     });

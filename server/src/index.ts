@@ -9,6 +9,7 @@ import express, {
 } from "express";
 import { z } from "zod";
 import { requireUser } from "./auth.js";
+import { configureApiKeyStore } from "./credentials.js";
 import {
   createNote,
   deleteNote,
@@ -17,6 +18,7 @@ import {
 } from "./changes.js";
 import { initNotifier } from "./notifier.js";
 import { initLive } from "./ws.js";
+import { closeKeySessions } from "./mcp/hub.js";
 import { mountMcp } from "./mcp/http.js";
 import {
   getVapid,
@@ -24,6 +26,16 @@ import {
   removeSubscription,
   upsertSubscription,
 } from "./pushStore.js";
+import {
+  keyForSecret,
+  MAX_KEYS_PER_ACCOUNT,
+  createKey,
+  findKey,
+  initKeys,
+  listKeys,
+  revokeKey,
+  touchKey,
+} from "./keys.js";
 import { getNote, init, listNotes } from "./store.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +59,10 @@ const pushSubscriptionBody = z.object({
   keys: z.object({ p256dh: z.string().min(1), auth: z.string().min(1) }),
 });
 const pushRemovalBody = z.object({ endpoint: z.string().min(1) });
+// A key's name is for its owner's own list, so an absent or unusable one is
+// given a plain default rather than rejected: the thing being created is the
+// credential, not the label.
+const createKeyBody = z.object({ name: z.string().catch("") });
 
 function parseBody<S extends z.ZodType>(
   schema: S,
@@ -148,6 +164,21 @@ app.delete("/api/notes/:id", requireUser, async (req, res) => {
   res.status(204).end();
 });
 
+// Minting, listing and revoking keys is something a person does, never something
+// a key does. A credential that could hand out credentials would outlive its own
+// revocation, and a key's name belongs to its owner — it is not the agent's to
+// read back. This is the one place `via` decides anything.
+function requireHuman(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.via === "apikey") {
+    res.status(403).json({
+      error:
+        "An API key cannot manage API keys. Do it as the person who owns them.",
+    });
+    return;
+  }
+  next();
+}
+
 // Browser push: the client subscribes through its service worker and registers
 // the resulting subscription here, keyed to the signed-in user so notifications
 // for a shared note can skip the person who made the edit.
@@ -174,6 +205,51 @@ app.delete("/api/push/subscription", requireUser, (req, res) => {
   res.status(204).end();
 });
 
+// The account's own API keys: the app's machine credential, for an agent that
+// has to reach the notes without Cloudflare Access (see MCP.md). The secret comes
+// back once, from the call that makes it, and is stored only as a hash.
+app.get("/api/keys", requireUser, requireHuman, (req, res) => {
+  res.json(listKeys(req.user!.email));
+});
+
+app.post("/api/keys", requireUser, requireHuman, async (req, res) => {
+  const body = parseBody(createKeyBody, req, res);
+  if (!body) return;
+  const result = await createKey(req.user!.email, body.name);
+  if (result.status === "too_many") {
+    res.status(409).json({
+      error: `Too many API keys for one account (${MAX_KEYS_PER_ACCOUNT}). Revoke one first.`,
+    });
+    return;
+  }
+  const { secret, ...key } = result.key;
+  console.log(`API key \u201c${key.name}\u201d created for ${req.user!.email}`);
+  res.status(201).json({ key, secret });
+});
+
+app.delete("/api/keys/:id", requireUser, requireHuman, async (req, res) => {
+  const email = req.user!.email;
+  const id = String(req.params.id);
+  const name = findKey(email, id)?.name;
+  if (!(await revokeKey(email, id))) {
+    res.status(404).json({ error: "API key not found" });
+    return;
+  }
+  // Revoking has to reach the agent that is already connected, not only the next
+  // handshake it makes.
+  const closed = await closeKeySessions(id);
+  console.log(
+    `API key \u201c${name ?? id}\u201d revoked for ${email}${
+      closed > 0
+        ? ` (${closed} live session${closed === 1 ? "" : "s"} closed)`
+        : ""
+    }`,
+  );
+  res.status(204).end();
+});
+
+// Registered after every API route, so an unknown one cannot be mistaken for the
+// SPA's own path and answered with index.html.
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
@@ -193,7 +269,13 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
+// The identity chain answers for this app's own keys; the store that says which
+// ones exist is handed to it here, at the app's entrance, so deciding who a
+// caller is never has to know where the hashes are kept.
+configureApiKeyStore({ lookup: keyForSecret, used: touchKey });
+
 await init();
+await initKeys();
 await initPush();
 initNotifier();
 const httpServer = app.listen(PORT, () => {

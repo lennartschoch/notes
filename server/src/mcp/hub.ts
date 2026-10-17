@@ -19,6 +19,10 @@ export interface McpSession {
   // MCP.md). Surfaced in the header log line and reserved for the same
   // "who is really driving" distinction the write path uses.
   agent?: boolean;
+  // Which API key opened this session, when it was one. Revoking that key has to
+  // reach the session it already authorised, or revocation would mean "this key
+  // stops working when the agent next connects".
+  keyId?: string;
   openedAt: number;
   lastSeenAt: number;
 }
@@ -83,8 +87,25 @@ export async function expireIdleSessions(idleMs: number): Promise<void> {
   const cutoff = Date.now() - idleMs;
   for (const [id, session] of sessions) {
     if (session.lastSeenAt >= cutoff) continue;
-    sessions.delete(id);
+    // First in the registry, then on the wire: the session has still to be
+    // findable while it takes its carets out of the rooms it stood in.
+    closeSession(id);
     await session.transport.close().catch(() => {});
     console.log(`MCP session ${id} expired (idle)`);
   }
+}
+
+// Hangs up every session a revoked API key had open, so revoking a key ends the
+// agent's access rather than merely declining its next handshake. Returns how many
+// sessions went with it, which is worth saying out loud when the person asks.
+export async function closeKeySessions(keyId: string): Promise<number> {
+  let closed = 0;
+  for (const [id, session] of sessions) {
+    if (session.keyId !== keyId) continue;
+    closeSession(id);
+    await session.transport.close().catch(() => {});
+    closed += 1;
+    console.log(`MCP session ${id} closed (API key revoked)`);
+  }
+  return closed;
 }

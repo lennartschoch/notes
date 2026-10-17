@@ -1,6 +1,32 @@
 import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import type { Actor } from "./types.js";
+import {
+  apiKeyProvider,
+  bearerToken,
+  headerValue,
+  looksLikeApiKey,
+  PASS,
+  type AuthFailure,
+  type Credentials,
+  type Identity,
+  type Match,
+  type Outcome,
+  type Provider,
+} from "./credentials.js";
+
+// Re-exported so an entrance can speak of an identity without importing two
+// modules to say one thing.
+export type {
+  ApiKeyGrant,
+  ApiKeyStore,
+  AuthFailure,
+  CredentialKind,
+  Credentials,
+  Identity,
+  Match,
+  Outcome,
+  Provider,
+} from "./credentials.js";
 
 const TEAM_DOMAIN = (
   process.env.CF_ACCESS_TEAM_DOMAIN ?? "example.cloudflareaccess.com"
@@ -27,18 +53,6 @@ if (
   );
 }
 
-// Which kind of credential granted an identity. Named after the credential,
-// never after anything the caller says about itself, so a machine cannot
-// describe its way into appearing to be a person.
-export type CredentialKind = "access" | "dev";
-
-// An identity, ready to be used as an Actor. `via` records where the grant came
-// from, for this app's own bookkeeping; whether an agent was driving the account
-// is part of every actor, and is derived from the credential, never claimed.
-export interface Identity extends Actor {
-  via: CredentialKind;
-}
-
 declare global {
   namespace Express {
     interface Request {
@@ -47,59 +61,19 @@ declare global {
   }
 }
 
-// ------------------------------------------------------------------ chain
-
-// Why a request was turned away. The difference matters to the caller: a token
-// that did not verify is Cloudflare's problem, a token that grants no account is
-// a setting this app's operator has not made.
-export type AuthFailure = "no_credential" | "invalid_token" | "no_account";
-
 const FAILURE_BODY: Record<AuthFailure, { error: string }> = {
   no_credential: { error: "Unauthorized" },
   invalid_token: { error: "Invalid Cloudflare Access token" },
+  invalid_key: {
+    error: "Invalid API key. Check the key, or mint a new one under Agents.",
+  },
   no_account: {
     error:
       "This Access token has no account to act as. A service token must match MCP_SERVICE_TOKEN_ID, and MCP_AGENT_EMAIL must name the account.",
   },
 };
 
-// Everything a provider may read a credential off: the headers of an HTTP
-// request or of a WebSocket upgrade — both are the same bag — plus the one thing
-// a browser socket cannot carry, described at `devProvider`.
-export interface Credentials {
-  headers: Record<string, string | undefined | string[]>;
-  queryEmail?: string | null;
-}
-
-type Match =
-  // Presents none of this provider's credentials: ask the next one.
-  | { kind: "pass" }
-  | { kind: "identity"; identity: Identity }
-  // A credential of ours that grants nobody: the request is refused, and nothing
-  // further is asked.
-  | { kind: "deny"; reason: AuthFailure };
-
-// What every entrance gets back: an identity, or the one reason there is none.
-export type Outcome =
-  | { ok: true; identity: Identity }
-  | { ok: false; reason: AuthFailure };
-
-export interface Provider {
-  kind: CredentialKind;
-  match(credentials: Credentials): Promise<Match>;
-}
-
-const PASS: Match = { kind: "pass" };
-
-function headerValue(headers: Credentials["headers"], name: string): string {
-  const raw = headers[name];
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function lowerEmail(value: string): string {
-  return value.trim().toLowerCase();
-}
+// ------------------------------------------------------------------ chain
 
 // The chain: the first credential a request presents is the one that is checked,
 // and if it grants nobody then the request is refused without asking anyone else.
@@ -110,7 +84,7 @@ export async function resolveIdentity(
   credentials: Credentials,
 ): Promise<Outcome> {
   for (const provider of chain) {
-    const outcome = await provider.match(credentials);
+    const outcome: Match = await provider.match(credentials);
     if (outcome.kind === "identity") {
       return { ok: true, identity: outcome.identity };
     }
@@ -125,13 +99,13 @@ export async function resolveIdentity(
 // or — for clients that cannot set that one — Authorization: Bearer. Verified
 // identically either way, which is why a request that bypasses Access cannot
 // forge the first: an unsigned header is not a token, and this app only ever
-// trusts the signature.
+// trusts the signature. A bearer token shaped like one of this app's own keys is
+// left to the key provider, so neither of them guesses at the other's credential.
 export function accessAssertion(headers: Credentials["headers"]): string {
   const direct = headerValue(headers, "cf-access-jwt-assertion");
   if (direct.length > 0) return direct;
-  const authorization = headerValue(headers, "authorization");
-  if (!/^bearer\s+/i.test(authorization)) return "";
-  return authorization.slice(authorization.indexOf(" ") + 1).trim();
+  const bearer = bearerToken(headers);
+  return looksLikeApiKey(bearer) ? "" : bearer;
 }
 
 // A machine credential (an Access service token) carries no email, so it needs
@@ -210,14 +184,20 @@ export function devProvider(): Provider {
   };
 }
 
-// The one chain, in precedence order: a person's Access token, then the machine
-// credential the operator pinned, then the dev identity. `machine` is the only
-// thing a surface adds — the MCP endpoint supplies the mapping, and cannot
-// otherwise reorder who is asked, or when.
+function lowerEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+// The one chain, in precedence order: this app's own API key, a person's Access
+// token, the machine credential the operator pinned, then the dev identity. A key
+// and an Access token are never confused for one another — one is prefixed, the
+// other is not — and `machine` is the only thing a surface adds, so no endpoint
+// gets to decide on its own who is trusted, or when.
 export function providers(
   machine?: (payload: JWTPayload) => string,
 ): Provider[] {
   return [
+    apiKeyProvider(),
     accessProvider({ verify: verifyAccessToken, machine }),
     devProvider(),
   ];

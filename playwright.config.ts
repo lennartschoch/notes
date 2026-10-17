@@ -41,6 +41,9 @@ export default defineConfig({
       PORT: String(port),
       NOTES_DATA_FILE: join(dataDir, "notes.json"),
       PUSH_DATA_FILE: join(dataDir, "push.json"),
+      // Revoked along with the rest of the slate, so a run never inherits
+      // somebody's keys.
+      API_KEYS_DATA_FILE: join(dataDir, "keys.json"),
       // Collapse the notification quiet period and cooldown so the push
       // scheduler can be observed in seconds instead of minutes/hours.
       PUSH_QUIET_MS: "300",

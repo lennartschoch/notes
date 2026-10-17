@@ -9,6 +9,12 @@ import {
   type Credentials,
   type Provider,
 } from "./auth.js";
+import {
+  API_KEY_PREFIX,
+  apiKeyProvider,
+  configureApiKeyStore,
+  type ApiKeyGrant,
+} from "./credentials.js";
 
 // The identity chain, with Access's signature check reduced to a lookup: which
 // credential wins, and what a failure is called, is this app's own decision, and
@@ -180,4 +186,90 @@ test("Access is asked before the dev identity", async () => {
   } finally {
     delete process.env.DEV_USERS;
   }
+});
+
+// ---- This app's own machine credential ---------------------------------
+
+const KEY: ApiKeyGrant = { id: "k1", account: "alice@test" };
+
+// A key store that is a lookup, so the chain is tested against the shape of the
+// grant rather than against a file. The store itself is keys.test.ts.
+// A key store that is a lookup, so the chain is tested against the shape of the
+// grant rather than against a file. The store itself is keys.test.ts.
+function keyStore(stored: Record<string, ApiKeyGrant>) {
+  const used: string[] = [];
+  configureApiKeyStore({
+    lookup: async (secret) => stored[secret],
+    used: async (id) => {
+      used.push(id);
+    },
+  });
+  return { provider: apiKeyProvider(), used };
+}
+
+test("an API key is its account, driven by a machine", async () => {
+  const { provider, used } = keyStore({ [`${API_KEY_PREFIX}good`]: KEY });
+  const outcome = await resolveIdentity(
+    [provider],
+    headers({ authorization: `Bearer ${API_KEY_PREFIX}good` }),
+  );
+  assert.ok(outcome.ok);
+  assert.deepEqual(outcome.identity, {
+    email: "alice@test",
+    agent: true,
+    via: "apikey",
+    keyId: "k1",
+  });
+  // Which key was used is how a revoked key's live sessions are found.
+  assert.deepEqual(used, ["k1"]);
+});
+
+test("a key that is not in the store grants nobody", async () => {
+  // The revoked key, the typo, the one from a different deployment.
+  const { provider } = keyStore({});
+  const outcome = await resolveIdentity(
+    [provider],
+    headers({ authorization: `Bearer ${API_KEY_PREFIX}revoked` }),
+  );
+  assert.deepEqual(outcome, { ok: false, reason: "invalid_key" });
+});
+
+test("a key is refused outright when nothing was configured to answer for keys", async () => {
+  // Which is how the chain stands before an app hands it a store — and how a
+  // deployment turns keys off.
+  configureApiKeyStore(undefined);
+  const outcome = await resolveIdentity(
+    [apiKeyProvider(), devProvider()],
+    headers({
+      authorization: `Bearer ${API_KEY_PREFIX}good`,
+      "x-dev-user-email": "mallory@test",
+    }),
+  );
+  assert.deepEqual(outcome, { ok: false, reason: "invalid_key" });
+});
+
+test("neither bearer credential is mistaken for the other", async () => {
+  const { provider } = keyStore({ [`${API_KEY_PREFIX}good`]: KEY });
+  const chain = [provider, WITH_TOKEN.assertion];
+
+  // A key is not an Access token: it is not three base64url segments, and
+  // asking Cloudflare about it would be a pointless round trip.
+  const asKey = await resolveIdentity(
+    chain,
+    headers({ authorization: `Bearer ${API_KEY_PREFIX}good` }),
+  );
+  assert.ok(asKey.ok);
+  assert.equal(asKey.identity.via, "apikey");
+
+  const asAccess = await resolveIdentity(
+    chain,
+    headers({ authorization: "Bearer good" }),
+  );
+  assert.ok(asAccess.ok);
+  assert.equal(asAccess.identity.via, "access");
+
+  assert.equal(
+    accessAssertion({ authorization: `Bearer ${API_KEY_PREFIX}good` }),
+    "",
+  );
 });
