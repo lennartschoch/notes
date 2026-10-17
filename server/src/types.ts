@@ -9,6 +9,11 @@ export type Visibility = "private" | "public";
 export interface Actor {
   email: string;
   agent?: boolean;
+  // Identifies the connection this actor was resolved from, for the one thing
+  // an email cannot tell apart: two agents acting as the same account. Live
+  // presence uses it to take an agent's carets out of every room when its MCP
+  // session closes.
+  sessionId?: string;
 }
 
 // The label shown to people for an actor. Owned by the server, never the agent.

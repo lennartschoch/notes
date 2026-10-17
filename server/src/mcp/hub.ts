@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { liveAgentLeaveSession } from "../ws.js";
 
 // Registry of the MCP sessions that are currently open. It lives apart from the
 // HTTP layer because a change made through one connection has to be announced
@@ -7,6 +8,10 @@ import type { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/se
 // client holding `notes://index` should learn that it went stale.
 
 export interface McpSession {
+  // The id clients send in the Mcp-Session-Id header. It is also what live
+  // presence keys an agent's carets by, so closing a connection takes them out
+  // of the rooms it was standing in.
+  sessionId: string;
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   email: string;
@@ -34,13 +39,18 @@ export function touchSession(id: string): void {
 }
 
 export function closeSession(id: string): void {
+  const session = sessions.get(id);
+  if (!session) return;
   sessions.delete(id);
+  // A person watching a note should not keep watching a caret for an agent whose
+  // connection has already ended.
+  liveAgentLeaveSession(session.sessionId);
 }
 
 // Removes the session belonging to a transport, whatever it was registered as.
 export function dropSession(transport: StreamableHTTPServerTransport): void {
   for (const [id, session] of sessions) {
-    if (session.transport === transport) sessions.delete(id);
+    if (session.transport === transport) closeSession(id);
   }
 }
 

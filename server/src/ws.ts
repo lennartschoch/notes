@@ -35,22 +35,39 @@ interface Client {
 }
 
 // A presence entry for an agent acting over HTTP (MCP), which has no socket of
-// its own. When such an agent edits a note we surface it to the people in the
-// room as "<account>'s agent", distinct from the account's own tabs, and let it
-// fade once the agent stops (agents have no idle/typing signal to key on).
+// its own. When such an agent reads or edits a note we surface it to the people
+// in the room as "<account>'s agent", distinct from the account's own tabs: a
+// caret where the agent says it is, and a chip saying whether it is looking or
+// typing. Agents announce where they are and leave when they are done; the
+// timeouts below are the safety net for one that vanishes mid-sentence.
 interface AgentPresence {
   actor: Actor;
+  // Which MCP session owns this presence, so closing that connection takes its
+  // caret out of every room with it instead of waiting for the timeout.
+  sessionId: string;
   caret: Omit<LiveCursor, "email" | "agent">;
+  state: PresenceState;
+  // What this presence settles back to when the typing burst ends: "viewing"
+  // for an agent sitting in the note, null for one that only made an edit.
+  settlesTo: PresenceState | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
 const clients = new Set<Client>();
 const rooms = new Map<string, Set<Client>>();
 const presence = new Map<string, Map<Client, PresenceState>>();
-// noteId -> presenceKey(email, true) -> ephemeral agent presence.
+// noteId -> presenceKey(email, true) -> ephemeral agent presence. One caret per
+// agent identity per note: two sessions of the same account's agent share the
+// peer the room sees, the way two tabs of one person share a chip.
 const agentPresence = new Map<string, Map<string, AgentPresence>>();
-// How long an agent stays visible in a room after its last write.
-const AGENT_PRESENCE_MS = 12_000;
+
+// How long each kind of agent presence survives without another call from it. A
+// typing burst that stopped is over; a reader may only be thinking. Together they
+// are how an agent leaves a note: nobody has to tell it to go.
+const AGENT_IDLE_MS: Record<PresenceState, number> = {
+  editing: 12_000,
+  viewing: 180_000,
+};
 
 function send(client: Client, message: LiveServerMessage): void {
   if (client.socket.readyState !== WebSocket.OPEN) return;
@@ -82,7 +99,7 @@ function presenceRoster(noteId: string): LiveEditor[] {
     }
   }
   for (const agent of agentPresence.get(noteId)?.values() ?? []) {
-    roster.push({ email: agent.actor.email, agent: true, state: "editing" });
+    roster.push({ email: agent.actor.email, agent: true, state: agent.state });
   }
   return roster;
 }
@@ -185,45 +202,124 @@ export function liveNoteGone(noteId: string): void {
   clearAllAgentPresence(noteId);
 }
 
-// Announce that an agent (acting over MCP, with no socket of its own) just
-// changed this note. People in the room see it as a distinct presence — "<account>'s
-// agent", not the account's own tab — carrying an "editing" chip and a caret at
-// the end of what the agent wrote, then fading once the agent goes quiet (agents
-// emit no idle signal, so a fixed lifetime is the only cue we have).
-export function liveAgentActivity(
-  note: { id: string; content: string; version: number },
-  actor: Actor,
-): void {
+export interface AgentCursorOptions {
+  noteId: string;
+  actor: Actor;
+  sessionId?: string;
+  // Where the caret sits, in the agent's coordinates: a character offset in the
+  // markdown plus the text it sits behind. Receivers relocate by the anchor, so
+  // the offset is only ever a fallback (see LiveCursor).
+  position: number | null;
+  anchor: string;
+  version: number;
+  // "editing" while the agent is typing, "viewing" when it is reading along.
+  state?: PresenceState;
+}
+
+function sameCaret(
+  a: Omit<LiveCursor, "email" | "agent">,
+  b: Omit<LiveCursor, "email" | "agent">,
+): boolean {
+  return (
+    a.position === b.position &&
+    a.anchor === b.anchor &&
+    a.version === b.version
+  );
+}
+
+// Announce where an agent is in a note: everyone else in the room sees a caret
+// and a chip attributed to that agent, and can watch it move as the agent works.
+export function liveAgentCursor(options: AgentCursorOptions): void {
+  const { actor, noteId } = options;
   if (!actor.agent) return;
   const key = presenceKey(actor.email, true);
-  let agents = agentPresence.get(note.id);
+  if (options.position === null) {
+    clearAgentPresence(noteId, key);
+    return;
+  }
+  const caret: Omit<LiveCursor, "email" | "agent"> = {
+    position: options.position,
+    anchor: options.anchor,
+    version: options.version,
+  };
+  let agents = agentPresence.get(noteId);
   if (!agents) {
     agents = new Map();
-    agentPresence.set(note.id, agents);
+    agentPresence.set(noteId, agents);
   }
-  // The agent has no cursor; stand in for "where it just wrote" by its caret at
-  // the end of the current text, anchored on the tail so it relocates if the
-  // note drifts.
-  const caret: Omit<LiveCursor, "email" | "agent"> = {
-    position: note.content.length,
-    anchor: note.content.slice(-CARET_ANCHOR_CHARS),
-    version: note.version,
-  };
+  const state: PresenceState = options.state ?? "editing";
   const existing = agents.get(key);
-  if (existing) {
-    existing.caret = caret;
-    if (existing.timer) clearTimeout(existing.timer);
-  } else {
-    agents.set(key, { actor, caret, timer: null });
+  // A caret that has not moved and a chip that has not changed are not news:
+  // resending them would make every peer's overlay blink for nothing. The timer
+  // still restarts, because the agent being quiet is not the agent being gone.
+  if (
+    existing &&
+    existing.state === state &&
+    sameCaret(existing.caret, caret)
+  ) {
+    setAgentTimer(existing, noteId, key);
+    return;
   }
-  const entry = agents.get(key)!;
+  const entry: AgentPresence = existing ?? {
+    actor,
+    sessionId: "",
+    caret,
+    state,
+    settlesTo: null,
+    timer: null,
+  };
+  entry.actor = actor;
+  entry.sessionId = options.sessionId ?? "";
+  entry.caret = caret;
+  entry.state = state;
+  // An agent that typed is still around afterwards, reading; one that has only
+  // been reading has nothing to fall back to.
+  entry.settlesTo = state === "editing" ? "viewing" : null;
+  agents.set(key, entry);
+  setAgentTimer(entry, noteId, key);
+  broadcastPresence(noteId);
+  broadcastCursor(noteId, null, actor.email, { agent: true, ...caret });
+}
+
+function setAgentTimer(
+  entry: AgentPresence,
+  noteId: string,
+  key: string,
+): void {
+  if (entry.timer) clearTimeout(entry.timer);
+  // Presence sweeps must not keep a closing process alive.
   entry.timer = setTimeout(
-    () => clearAgentPresence(note.id, key),
-    AGENT_PRESENCE_MS,
+    () => decayAgentPresence(noteId, key),
+    AGENT_IDLE_MS[entry.state],
   );
   entry.timer.unref?.();
-  broadcastPresence(note.id);
-  broadcastCursor(note.id, null, actor.email, { agent: true, ...caret });
+}
+
+// Agent presence fades the way a person's would: the typing stops, the chip goes
+// from "is editing" to "is viewing", and only later does the caret leave.
+function decayAgentPresence(noteId: string, key: string): void {
+  const entry = agentPresence.get(noteId)?.get(key);
+  if (!entry) return;
+  const settlesTo = entry.settlesTo;
+  if (!settlesTo || settlesTo === entry.state) {
+    clearAgentPresence(noteId, key);
+    return;
+  }
+  entry.state = settlesTo;
+  entry.settlesTo = null;
+  setAgentTimer(entry, noteId, key);
+  broadcastPresence(noteId);
+}
+
+// An MCP session that closes takes its agent's presence with it: nobody should
+// keep watching a caret for an agent that has already gone home.
+export function liveAgentLeaveSession(sessionId: string): void {
+  if (sessionId.length === 0) return;
+  for (const [noteId, agents] of agentPresence) {
+    for (const [key, entry] of agents) {
+      if (entry.sessionId === sessionId) clearAgentPresence(noteId, key);
+    }
+  }
 }
 
 function clearAgentPresence(noteId: string, key: string): void {

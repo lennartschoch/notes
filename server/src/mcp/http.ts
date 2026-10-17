@@ -101,7 +101,10 @@ async function handlePost(req: Request, res: Response): Promise<void> {
     dropSession(transport);
   };
 
-  const server = buildMcpServer(actor);
+  // The identity of this connection, carried into every write it makes: the
+  // account alone cannot tell two agents acting as it apart, and presence has to.
+  const sessionId = randomUUID();
+  const server = buildMcpServer({ ...actor, sessionId });
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 
@@ -110,6 +113,7 @@ async function handlePost(req: Request, res: Response): Promise<void> {
   const id = transport.sessionId;
   if (id && !closed) {
     openSession(id, {
+      sessionId,
       server,
       transport,
       email: actor.email,

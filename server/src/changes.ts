@@ -7,7 +7,7 @@ import {
   updateNote as storeUpdateNote,
   type UpdateResult,
 } from "./store.js";
-import { liveAgentActivity, liveNoteChanged, liveNoteGone } from "./ws.js";
+import { liveNoteChanged, liveNoteGone } from "./ws.js";
 import type { Actor, Note, Visibility } from "./types.js";
 
 // The single write path for notes. The REST API and the MCP tools both mutate
@@ -16,15 +16,15 @@ import type { Actor, Note, Visibility } from "./types.js";
 // shared note is shared with, and staleness notifications for the MCP
 // sessions that watch note:// resources. Reading stays on store.ts.
 
-// Announce a saved note: push-notify the people who did not just edit it
-// (only public notes have other people), tell the MCP sessions, and — for an
-// agent — show it as live presence in the note's room. A human's own edit needs
-// no synthetic presence: their browser tab already reports it over the socket.
+// Announce a saved note: push-notify the people who did not just edit it (only
+// public notes have other people), tell the MCP sessions, and push the snapshot
+// to whoever has the note open. Presence is not announced here: a human's own tab
+// reports it over the socket, and an agent's caret is announced by the MCP tools,
+// which know where in the note the change landed.
 function announceSaved(note: Note, actor: Actor): void {
   if (note.visibility === "public") scheduleNoteChange(note, actor);
   noteChanged(note.id);
   liveNoteChanged(note.id);
-  liveAgentActivity(note, actor);
 }
 
 export async function createNote(
