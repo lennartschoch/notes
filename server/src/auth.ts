@@ -29,7 +29,14 @@ if (
 declare global {
   namespace Express {
     interface Request {
-      user?: { email: string };
+      user?: {
+        email: string;
+        // True when the request comes from an AI agent driving `email` rather
+        // than the person themselves (a pinned Access service token, see
+        // MCP.md). Absent/false for a real, signed-in user. The label shown to
+        // people is derived by this app, never taken from the agent.
+        agent?: boolean;
+      };
     }
   }
 }

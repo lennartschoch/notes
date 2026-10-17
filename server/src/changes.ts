@@ -7,8 +7,8 @@ import {
   updateNote as storeUpdateNote,
   type UpdateResult,
 } from "./store.js";
-import { liveNoteChanged, liveNoteGone } from "./ws.js";
-import type { Note, Visibility } from "./types.js";
+import { liveAgentActivity, liveNoteChanged, liveNoteGone } from "./ws.js";
+import type { Actor, Note, Visibility } from "./types.js";
 
 // The single write path for notes. The REST API and the MCP tools both mutate
 // notes through these functions, so every surface gets the same side effects
@@ -17,22 +17,26 @@ import type { Note, Visibility } from "./types.js";
 // sessions that watch note:// resources. Reading stays on store.ts.
 
 // Announce a saved note: push-notify the people who did not just edit it
-// (only public notes have other people), and tell the MCP sessions.
-function announceSaved(note: Note, editorEmail: string): void {
-  if (note.visibility === "public") scheduleNoteChange(note, editorEmail);
+// (only public notes have other people), tell the MCP sessions, and — for an
+// agent — show it as live presence in the note's room. A human's own edit needs
+// no synthetic presence: their browser tab already reports it over the socket.
+function announceSaved(note: Note, actor: Actor): void {
+  if (note.visibility === "public") scheduleNoteChange(note, actor);
   noteChanged(note.id);
   liveNoteChanged(note.id);
+  liveAgentActivity(note, actor);
 }
 
 export async function createNote(
   content: string,
-  owner: string,
+  actor: Actor,
   visibility?: Visibility,
 ): Promise<Note> {
-  const note = await storeCreateNote(content, owner);
+  const note = await storeCreateNote(content, actor.email);
   const finalNote =
     visibility && visibility !== note.visibility
-      ? ((await storeSetNoteVisibility(note.id, visibility, owner)) ?? note)
+      ? ((await storeSetNoteVisibility(note.id, visibility, actor.email)) ??
+        note)
       : note;
   // Creating notifies nobody by push (the editors list is empty), but the
   // shared MCP index gained an entry.
@@ -44,26 +48,26 @@ export async function updateNote(
   id: string,
   content: string,
   version: number,
-  email: string,
+  actor: Actor,
   baseContent?: string,
 ): Promise<UpdateResult> {
   const result = await storeUpdateNote(
     id,
     content,
     version,
-    email,
+    actor.email,
     baseContent,
   );
-  if (result.status === "ok") announceSaved(result.note, email);
+  if (result.status === "ok") announceSaved(result.note, actor);
   return result;
 }
 
 export async function setNoteVisibility(
   id: string,
   visibility: Visibility,
-  email: string,
+  actor: Actor,
 ): Promise<Note | undefined> {
-  const note = await storeSetNoteVisibility(id, visibility, email);
+  const note = await storeSetNoteVisibility(id, visibility, actor.email);
   if (note) {
     noteChanged(id);
     // Subscribers who just lost sight of the note receive a `gone` from the
@@ -73,8 +77,8 @@ export async function setNoteVisibility(
   return note;
 }
 
-export async function deleteNote(id: string, email: string): Promise<boolean> {
-  const removed = await storeDeleteNote(id, email);
+export async function deleteNote(id: string, actor: Actor): Promise<boolean> {
+  const removed = await storeDeleteNote(id, actor.email);
   if (removed) {
     noteRemoved(id);
     noteChanged(id);

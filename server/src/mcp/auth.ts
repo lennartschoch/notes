@@ -72,6 +72,16 @@ function accessAssertion(req: Request): string {
   return authorization.slice(authorization.indexOf(" ") + 1).trim();
 }
 
+// Whether a payload is a machine rather than a person: a person's Access token
+// always carries an email; a service-token application token does not (its
+// identity is common_name). Since accountForPayload only returns an account for
+// an email or the one pinned token, "no email" is exactly the machine case.
+function isMachinePayload(payload: JWTPayload): boolean {
+  return !(
+    typeof payload.email === "string" && payload.email.trim().length > 0
+  );
+}
+
 export async function requireMcpUser(
   req: Request,
   res: Response,
@@ -84,6 +94,16 @@ export async function requireMcpUser(
   // else.
   if (token.length === 0) {
     await requireUser(req, res, next);
+    // Dev/test only: let the e2e suite drive an agent identity over MCP the same
+    // way it drives two users over REST (an explicit header, DEV_USERS-gated),
+    // since a real service-token JWT is Cloudflare's to mint.
+    if (
+      process.env.DEV_USERS === "1" &&
+      req.user &&
+      req.header("x-dev-agent") === "1"
+    ) {
+      req.user.agent = true;
+    }
     return;
   }
 
@@ -95,7 +115,7 @@ export async function requireMcpUser(
 
   const account = accountForPayload(payload, accessConfig());
   if (account.length > 0) {
-    req.user = { email: account };
+    req.user = { email: account, agent: isMachinePayload(payload) };
     next();
     return;
   }

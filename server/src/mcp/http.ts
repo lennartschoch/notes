@@ -85,7 +85,7 @@ async function handlePost(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const email = req.user!.email;
+  const actor = req.user!;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
@@ -101,7 +101,7 @@ async function handlePost(req: Request, res: Response): Promise<void> {
     dropSession(transport);
   };
 
-  const server = buildMcpServer(email);
+  const server = buildMcpServer(actor);
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 
@@ -112,12 +112,13 @@ async function handlePost(req: Request, res: Response): Promise<void> {
     openSession(id, {
       server,
       transport,
-      email,
+      email: actor.email,
+      agent: actor.agent,
       openedAt: Date.now(),
       lastSeenAt: Date.now(),
     });
     console.log(
-      `MCP session ${id} opened by ${email} (${sessionCount()} open)`,
+      `MCP session ${id} opened by ${actor.email}${actor.agent ? " (agent)" : ""} (${sessionCount()} open)`,
     );
   }
 }

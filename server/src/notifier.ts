@@ -9,7 +9,7 @@ import {
 } from "./pushStore.js";
 import { noteTitle } from "shared";
 import { peekNote } from "./store.js";
-import type { Note } from "./types.js";
+import { pushBody, type Actor, type Note } from "./types.js";
 
 // Auto-save writes on every pause in typing, so a change never notifies
 // immediately: the note must be quiet for PUSH_QUIET_MS first (default five
@@ -26,7 +26,7 @@ interface LiveState {
   lastChangedAt: number;
   lastNotifiedAt: number;
   pending: boolean;
-  editors: string[];
+  editors: Actor[];
   title: string;
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -38,7 +38,7 @@ function snapshot(state: LiveState) {
     lastChangedAt: state.lastChangedAt,
     lastNotifiedAt: state.lastNotifiedAt,
     pending: state.pending,
-    editors: [...state.editors],
+    editors: state.editors.map((editor) => ({ ...editor })),
     title: state.title,
   };
 }
@@ -52,7 +52,7 @@ export function initNotifier(): void {
   }
 }
 
-export function scheduleNoteChange(note: Note, editorEmail: string): void {
+export function scheduleNoteChange(note: Note, editor: Actor): void {
   const existing = states.get(note.id);
   if (existing && Date.now() < existing.lastNotifiedAt + COOLDOWN_MS) {
     // Inside the cooldown that started with the last notification: this
@@ -75,8 +75,13 @@ export function scheduleNoteChange(note: Note, editorEmail: string): void {
   state.lastChangedAt = Date.now();
   state.pending = true;
   state.title = noteTitle(note.content);
-  if (editorEmail && !state.editors.includes(editorEmail)) {
-    state.editors.push(editorEmail);
+  if (
+    editor.email &&
+    !state.editors.some(
+      (prior) => prior.email === editor.email && prior.agent === editor.agent,
+    )
+  ) {
+    state.editors.push(editor);
   }
   arm(note.id, state);
   void saveNoteNotifyState(note.id, snapshot(state));
@@ -142,21 +147,22 @@ async function fire(id: string): Promise<void> {
 async function deliver(
   note: Note,
   title: string,
-  editors: string[],
+  editors: Actor[],
 ): Promise<boolean> {
+  // A subscriber is only spared the notification when they edited the note
+  // *themselves*. An agent acting as their account is deliberately not "them":
+  // people want to know when a bot changed a shared note on their behalf, and
+  // the account owner is exactly who that message is for.
   const recipients = listSubscriptions().filter(
-    (sub) => !editors.includes(sub.email),
+    (sub) =>
+      !editors.some((editor) => !editor.agent && editor.email === sub.email),
   );
   if (recipients.length === 0) return false;
   const vapid = getVapid();
   if (vapid) {
     webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
   }
-  const first = editors[0] ?? "someone";
-  const body =
-    editors.length > 1
-      ? `Updated by ${first} and ${editors.length - 1} others`
-      : `Updated by ${first}`;
+  const body = pushBody(editors);
   const payload = JSON.stringify({
     title: title || "Note updated",
     body,

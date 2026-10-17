@@ -99,7 +99,7 @@ app.get("/api/notes/:id", requireUser, (req, res) => {
 app.post("/api/notes", requireUser, async (req, res) => {
   const body = parseBody(createNoteBody, req, res);
   if (!body) return;
-  const note = await createNote(body.content, req.user!.email);
+  const note = await createNote(body.content, req.user!);
   res.status(201).json(note);
 });
 
@@ -110,7 +110,7 @@ app.put("/api/notes/:id", requireUser, async (req, res) => {
     String(req.params.id),
     body.content,
     body.version,
-    req.user!.email,
+    req.user!,
     body.baseContent,
   );
   if (result.status === "not_found") {
@@ -130,7 +130,7 @@ app.patch("/api/notes/:id", requireUser, async (req, res) => {
   const note = await setNoteVisibility(
     String(req.params.id),
     body.visibility,
-    req.user!.email,
+    req.user!,
   );
   if (!note) {
     res.status(404).json({ error: "Note not found" });
@@ -140,7 +140,7 @@ app.patch("/api/notes/:id", requireUser, async (req, res) => {
 });
 
 app.delete("/api/notes/:id", requireUser, async (req, res) => {
-  const removed = await deleteNote(String(req.params.id), req.user!.email);
+  const removed = await deleteNote(String(req.params.id), req.user!);
   if (!removed) {
     res.status(404).json({ error: "Note not found" });
     return;

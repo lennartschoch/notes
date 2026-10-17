@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import webpush from "web-push";
 import { z } from "zod";
+import type { Actor } from "./types.js";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 // Follow the notes store onto whatever volume NOTES_DATA_FILE points at, so
@@ -32,6 +33,17 @@ const subscriptionSchema = z.object({
 });
 export type PushSubscriptionRecord = z.infer<typeof subscriptionSchema>;
 
+// A persisted editor is an account plus whether an agent was driving it. Older
+// data files stored a bare email string; those load as a human (agent: false).
+const editorSchema = z.union([
+  z
+    .object({ email: z.string(), agent: z.boolean().optional() })
+    .transform(({ email, agent }): Actor =>
+      agent ? { email, agent: true } : { email },
+    ),
+  z.string().transform((email): Actor => ({ email })),
+]);
+
 // Notification-scheduler state that must survive a restart: whether changes
 // are still waiting for their quiet period and when the last notification
 // went out (the cooldown anchor).
@@ -39,13 +51,14 @@ const noteNotifyStateSchema = z.object({
   lastChangedAt: z.number(),
   lastNotifiedAt: z.number(),
   pending: z.boolean().catch(false),
-  editors: z
-    .unknown()
-    .transform((value) =>
-      Array.isArray(value)
-        ? value.filter((email): email is string => typeof email === "string")
-        : [],
-    ),
+  editors: z.unknown().transform((value) =>
+    Array.isArray(value)
+      ? value.flatMap((entry) => {
+          const parsed = editorSchema.safeParse(entry);
+          return parsed.success ? [parsed.data] : [];
+        })
+      : [],
+  ),
   title: z.string().catch(""),
 });
 export type NoteNotifyState = z.infer<typeof noteNotifyStateSchema>;

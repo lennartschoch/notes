@@ -3,6 +3,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   CARET_ANCHOR_CHARS,
+  presenceKey,
   type LiveClientMessage,
   type LiveCursor,
   type LiveEditor,
@@ -12,6 +13,7 @@ import {
 } from "shared";
 import { identityFromHandshake } from "./auth.js";
 import { canView, peekNote } from "./store.js";
+import type { Actor } from "./types.js";
 
 // The live channel: one WebSocket per open tab. A connection subscribes to
 // the notes it has open; every note write (REST, MCP, or another tab) pushes
@@ -32,9 +34,23 @@ interface Client {
   alive: boolean;
 }
 
+// A presence entry for an agent acting over HTTP (MCP), which has no socket of
+// its own. When such an agent edits a note we surface it to the people in the
+// room as "<account>'s agent", distinct from the account's own tabs, and let it
+// fade once the agent stops (agents have no idle/typing signal to key on).
+interface AgentPresence {
+  actor: Actor;
+  caret: Omit<LiveCursor, "email" | "agent">;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 const clients = new Set<Client>();
 const rooms = new Map<string, Set<Client>>();
 const presence = new Map<string, Map<Client, PresenceState>>();
+// noteId -> presenceKey(email, true) -> ephemeral agent presence.
+const agentPresence = new Map<string, Map<string, AgentPresence>>();
+// How long an agent stays visible in a room after its last write.
+const AGENT_PRESENCE_MS = 12_000;
 
 function send(client: Client, message: LiveServerMessage): void {
   if (client.socket.readyState !== WebSocket.OPEN) return;
@@ -58,12 +74,17 @@ function snapshot(note: LiveNoteSnapshot): LiveNoteSnapshot {
 }
 
 function presenceRoster(noteId: string): LiveEditor[] {
+  const roster: LiveEditor[] = [];
   const inRoom = presence.get(noteId);
-  if (!inRoom) return [];
-  return Array.from(inRoom.entries()).map(([client, state]) => ({
-    email: client.email,
-    state,
-  }));
+  if (inRoom) {
+    for (const [client, state] of inRoom) {
+      roster.push({ email: client.email, state });
+    }
+  }
+  for (const agent of agentPresence.get(noteId)?.values() ?? []) {
+    roster.push({ email: agent.actor.email, agent: true, state: "editing" });
+  }
+  return roster;
 }
 
 function broadcastPresence(noteId: string): void {
@@ -161,6 +182,73 @@ export function liveNoteChanged(noteId: string): void {
 export function liveNoteGone(noteId: string): void {
   liveNoteChanged(noteId);
   presence.delete(noteId);
+  clearAllAgentPresence(noteId);
+}
+
+// Announce that an agent (acting over MCP, with no socket of its own) just
+// changed this note. People in the room see it as a distinct presence — "<account>'s
+// agent", not the account's own tab — carrying an "editing" chip and a caret at
+// the end of what the agent wrote, then fading once the agent goes quiet (agents
+// emit no idle signal, so a fixed lifetime is the only cue we have).
+export function liveAgentActivity(
+  note: { id: string; content: string; version: number },
+  actor: Actor,
+): void {
+  if (!actor.agent) return;
+  const key = presenceKey(actor.email, true);
+  let agents = agentPresence.get(note.id);
+  if (!agents) {
+    agents = new Map();
+    agentPresence.set(note.id, agents);
+  }
+  // The agent has no cursor; stand in for "where it just wrote" by its caret at
+  // the end of the current text, anchored on the tail so it relocates if the
+  // note drifts.
+  const caret: Omit<LiveCursor, "email" | "agent"> = {
+    position: note.content.length,
+    anchor: note.content.slice(-CARET_ANCHOR_CHARS),
+    version: note.version,
+  };
+  const existing = agents.get(key);
+  if (existing) {
+    existing.caret = caret;
+    if (existing.timer) clearTimeout(existing.timer);
+  } else {
+    agents.set(key, { actor, caret, timer: null });
+  }
+  const entry = agents.get(key)!;
+  entry.timer = setTimeout(
+    () => clearAgentPresence(note.id, key),
+    AGENT_PRESENCE_MS,
+  );
+  entry.timer.unref?.();
+  broadcastPresence(note.id);
+  broadcastCursor(note.id, null, actor.email, { agent: true, ...caret });
+}
+
+function clearAgentPresence(noteId: string, key: string): void {
+  const agents = agentPresence.get(noteId);
+  const entry = agents?.get(key);
+  if (!agents || !entry) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  agents.delete(key);
+  if (agents.size === 0) agentPresence.delete(noteId);
+  broadcastPresence(noteId);
+  broadcastCursor(noteId, null, entry.actor.email, {
+    agent: true,
+    position: null,
+    anchor: "",
+    version: 0,
+  });
+}
+
+function clearAllAgentPresence(noteId: string): void {
+  const agents = agentPresence.get(noteId);
+  if (!agents) return;
+  for (const entry of agents.values()) {
+    if (entry.timer) clearTimeout(entry.timer);
+  }
+  agentPresence.delete(noteId);
 }
 
 function attach(client: Client): void {
@@ -200,6 +288,14 @@ function attach(client: Client): void {
             cursor: { email: peer.email, ...caret },
           });
         }
+      }
+      // A live agent's caret belongs to the replay too: it is not a socket.
+      for (const agent of agentPresence.get(message.noteId)?.values() ?? []) {
+        send(client, {
+          type: "cursor",
+          noteId: message.noteId,
+          cursor: { email: agent.actor.email, agent: true, ...agent.caret },
+        });
       }
     } else if (message.type === "unsubscribe") {
       forget(client, message.noteId);

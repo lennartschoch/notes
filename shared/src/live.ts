@@ -20,7 +20,21 @@ export interface LiveNoteSnapshot {
 
 export interface LiveEditor {
   email: string;
+  // True when an AI agent is driving this identity rather than the person
+  // themselves (see MCP.md). Absent/false for a real user. A boolean rather
+  // than a name on purpose: the account model allows at most one agent per
+  // account, and a name the agent chose for itself would be an impersonation
+  // vector. The UI renders the label ("<email>'s agent"), never the agent.
+  agent?: boolean;
   state: PresenceState;
+}
+
+// A peer is identified by the account *and* whether an agent is driving it: a
+// person and an agent acting as that same person are distinct peers, so both the
+// presence roster and the caret overlay key on this composite, not the bare
+// email. `\u0000` cannot appear in an email.
+export function presenceKey(email: string, agent?: boolean): string {
+  return agent ? `${email}\u0000agent` : email;
 }
 
 // How much text travels with a caret so a receiver can find it again when
@@ -33,6 +47,8 @@ export const CARET_ANCHOR_CHARS = 24;
 // A null position is a deliberate clearing of that peer's caret.
 export interface LiveCursor {
   email: string;
+  // Set when an agent is driving this caret (see LiveEditor.agent).
+  agent?: boolean;
   position: number | null;
   anchor: string;
   version: number;

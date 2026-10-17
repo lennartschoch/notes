@@ -5,9 +5,11 @@ import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiveCursor } from "shared";
+import { presenceKey } from "shared";
 import {
   caretAnchor,
   caretColor,
+  caretLabel,
   positionOfText,
   resolveCaretPosition,
   type PeerCaret,
@@ -226,12 +228,15 @@ function MarkdownEditor({
         // The position fell outside the document mid-rewrite; drop it.
         continue;
       }
+      const key = presenceKey(caret.email, caret.agent);
       next.push({
-        email: caret.email,
+        key,
+        label: caretLabel(caret.email, caret.agent),
+        agent: caret.agent === true,
         left: coords.left - wrapRect.left,
         top: coords.top - wrapRect.top,
         height: Math.max(coords.bottom - coords.top, 16),
-        color: caretColor(caret.email),
+        color: caretColor(key),
       });
     }
     setPeerCarets(next);
@@ -284,14 +289,15 @@ function MarkdownEditor({
           >
             {peerCarets.map((caret) => (
               <span
-                key={caret.email}
+                key={caret.key}
                 className="remote-caret"
+                data-agent={caret.agent ? "true" : undefined}
                 style={{
                   transform: `translate(${caret.left}px, ${caret.top}px)`,
                   height: `${caret.height}px`,
                   backgroundColor: caret.color,
                 }}
-                title={`${caret.email} is here`}
+                title={`${caret.label} is here`}
               />
             ))}
           </div>

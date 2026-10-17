@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LiveCursor } from "shared";
+import { presenceKey } from "shared";
 // The caret logic is pure document math, so the unit suite exercises it
 // against fake documents instead of a live ProseMirror view.
 import {
@@ -88,4 +89,18 @@ test("caretColor is stable per person and varies between people", () => {
     ["alice@test", "bob@test", "charlie@test"].map(caretColor),
   );
   assert.equal(colors.size, 3);
+});
+
+test("a person and their own agent are distinct peers", () => {
+  // The whole point of the composite key: an agent acting as an account must
+  // not collapse onto that account's own presence.
+  assert.notEqual(
+    presenceKey("bob@test", true),
+    presenceKey("bob@test", false),
+  );
+  assert.equal(presenceKey("bob@test"), presenceKey("bob@test", false));
+  assert.notEqual(
+    caretColor(presenceKey("bob@test", true)),
+    caretColor(presenceKey("bob@test", false)),
+  );
 });

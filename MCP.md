@@ -142,6 +142,28 @@ is newest — fine for a note nobody else is in, risky in a shared one.
 `replace_in_note` additionally refuses a find that matches several times (unless
 `all: true`) and one that matches nothing, so a partial edit never lands.
 
+## Being seen as an agent
+
+An agent edits the same notes as the person it acts as, but it should not look
+like that person typing. When a connection is authenticated with a machine
+credential (a pinned service token, or the `x-dev-agent` dev identity), this app
+marks it as an agent and surfaces that everywhere people look:
+
+- **Push notifications** say `Updated by you@example.com's agent`, not
+  `Updated by you@example.com`. And because that edit was _not_ the person
+  typing, it does **not** count as their own change — they are still notified
+  when their agent edits a shared note.
+- **Live presence** — the header chip and the remote caret — shows
+  _"you@example.com's agent is editing"_ as a peer **distinct from the person's
+  own tab**, even though both act as the same email. An agent's write is echoed
+  into the note's room as a short-lived presence that fades a little after the
+  agent stops (agents emit no typing/idle signal).
+- `whoami` reports `Acting as you@example.com (AI agent)`.
+
+The label is always rendered by this app from the account email plus a boolean
+"is an agent", never from a name the agent chose for itself — so an agent cannot
+present itself as a person or as a different account.
+
 ## Resources
 
 Clients that attach context instead of calling tools get the same data:

@@ -1,4 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Actor } from "../types.js";
 import { registerResources } from "./resources.js";
 import { registerTools } from "./tools.js";
 
@@ -21,12 +22,12 @@ Notes are also exposed as resources (notes://index and note://{id}) for clients 
 // One McpServer instance per MCP session: the identity of the caller is closed
 // over by every tool callback, so a session can never act as somebody else and
 // no request has to carry an identity of its own.
-export function buildMcpServer(email: string): McpServer {
+export function buildMcpServer(actor: Actor): McpServer {
   const server = new McpServer(
     { name: "notes", version: SERVER_VERSION },
     { instructions: INSTRUCTIONS },
   );
-  registerTools(server, email);
-  registerResources(server, email);
+  registerTools(server, actor);
+  registerResources(server, actor.email);
   return server;
 }

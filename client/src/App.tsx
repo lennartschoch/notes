@@ -7,9 +7,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { AlertTriangle, Bell, BellOff, Globe, Lock } from "lucide-react";
-import { noteTitle, type LiveCursor, type LiveEditor } from "shared";
+import { AlertTriangle, Bell, BellOff, Bot, Globe, Lock } from "lucide-react";
+import {
+  noteTitle,
+  presenceKey,
+  type LiveCursor,
+  type LiveEditor,
+} from "shared";
 import { api, type Note } from "./api";
+import { caretLabel } from "./carets";
 import { createLive, idleLiveHandlers, type LiveStatus } from "./live";
 import { mergePendingChanges } from "./pendingChanges";
 import { createSyncQueue, type SyncQueueEvents } from "./syncQueue";
@@ -62,7 +68,9 @@ const idleEvents: SyncQueueEvents = {
 // How long a keystroke keeps the tab marked "editing" for the other peers.
 const TYPING_IDLE_MS = 4000;
 
-// A peer is identified only by their email; the chip shows a compact tag.
+// A peer is identified by their email (plus whether an agent drives them); the
+// chip shows a compact tag, or a robot mark for an agent so it never looks like
+// the person typed it themselves.
 function initialsFor(email: string): string {
   const local = email.split("@")[0] ?? email;
   return local.slice(0, 2).toUpperCase();
@@ -240,7 +248,13 @@ export default function App() {
         }
       },
       presence: (noteId, editors) => {
-        const peers = editors.filter((editor) => editor.email !== email);
+        // A peer is identified by account *and* whether an agent drives it, so
+        // an agent acting as you is not mistaken for you. Only this tab's own
+        // presence (this email, no agent) is noise to filter out.
+        const me = presenceKey(email ?? "", false);
+        const peers = editors.filter(
+          (editor) => presenceKey(editor.email, editor.agent) !== me,
+        );
         setLiveEditors((prev) => ({
           ...prev,
           // The roster includes this tab; a chip for yourself is noise.
@@ -248,19 +262,24 @@ export default function App() {
         }));
         // A peer can only have a caret if they are in the room; pruning here
         // sweeps up any clear that was missed while this tab was reconnecting.
-        const stillHere = new Set(peers.map((peer) => peer.email));
+        const stillHere = new Set(
+          peers.map((peer) => presenceKey(peer.email, peer.agent)),
+        );
         setLiveCarets((prev) => {
           const inNote = prev[noteId];
           if (!inNote) return prev;
-          const kept = inNote.filter((caret) => stillHere.has(caret.email));
+          const kept = inNote.filter((caret) =>
+            stillHere.has(presenceKey(caret.email, caret.agent)),
+          );
           if (kept.length === inNote.length) return prev;
           return { ...prev, [noteId]: kept };
         });
       },
       cursor: (noteId, cursor) => {
+        const cursorKey = presenceKey(cursor.email, cursor.agent);
         setLiveCarets((prev) => {
           const others = (prev[noteId] ?? []).filter(
-            (caret) => caret.email !== cursor.email,
+            (caret) => presenceKey(caret.email, caret.agent) !== cursorKey,
           );
           return {
             ...prev,
@@ -723,23 +742,32 @@ export default function App() {
                     className="flex items-center -space-x-1.5"
                     aria-label="Other people in this note"
                   >
-                    {peers.map((peer) => (
-                      <span
-                        key={peer.email}
-                        title={
-                          peer.state === "editing"
-                            ? `${peer.email} is editing`
-                            : `${peer.email} is viewing`
-                        }
-                        className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-[0.625rem] font-semibold ${
-                          peer.state === "editing"
-                            ? "bg-amber-500 text-white"
-                            : "bg-slate-200 text-slate-700"
-                        }`}
-                      >
-                        {initialsFor(peer.email)}
-                      </span>
-                    ))}
+                    {peers.map((peer) => {
+                      const label = caretLabel(peer.email, peer.agent);
+                      return (
+                        <span
+                          key={presenceKey(peer.email, peer.agent)}
+                          title={
+                            peer.state === "editing"
+                              ? `${label} is editing`
+                              : `${label} is viewing`
+                          }
+                          className={`flex h-7 w-7 items-center justify-center rounded-full border-2 border-white text-[0.625rem] font-semibold ${
+                            peer.agent
+                              ? "bg-indigo-500 text-white"
+                              : peer.state === "editing"
+                                ? "bg-amber-500 text-white"
+                                : "bg-slate-200 text-slate-700"
+                          }`}
+                        >
+                          {peer.agent ? (
+                            <Bot size={14} aria-hidden="true" />
+                          ) : (
+                            initialsFor(peer.email)
+                          )}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
                 <button

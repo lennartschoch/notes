@@ -70,18 +70,30 @@ export function resolveCaretPosition(
 
 // A remote caret, measured into pixels for the overlay layer.
 export interface PeerCaret {
-  email: string;
+  // Identity the caret is keyed and colored by: the account plus whether an
+  // agent is driving it, so a person and their own agent never share one.
+  key: string;
+  // What the tooltip says — the account, or "<account>'s agent".
+  label: string;
+  agent: boolean;
   left: number;
   top: number;
   height: number;
   color: string;
 }
 
-// A stable color per person, so two peers are never the same shade.
-export function caretColor(email: string): string {
+// A stable color per peer identity, so two peers are never the same shade.
+// Keyed by the composite presence identity, not the bare email.
+export function caretColor(key: string): string {
   let hash = 0;
-  for (let i = 0; i < email.length; i += 1) {
-    hash = (hash * 31 + email.charCodeAt(i)) | 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0;
   }
   return `hsl(${Math.abs(hash) % 360} 72% 45%)`;
+}
+
+// Human-facing label for a caret's owner. Owned by this app, never by the agent,
+// so an agent cannot present itself as a person.
+export function caretLabel(email: string, agent?: boolean): string {
+  return agent ? `${email}\u2019s agent` : email;
 }

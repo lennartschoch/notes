@@ -10,6 +10,10 @@ export interface McpSession {
   server: McpServer;
   transport: StreamableHTTPServerTransport;
   email: string;
+  // True when the session is an agent acting on an account's behalf (see
+  // MCP.md). Surfaced in the header log line and reserved for the same
+  // "who is really driving" distinction the write path uses.
+  agent?: boolean;
   openedAt: number;
   lastSeenAt: number;
 }

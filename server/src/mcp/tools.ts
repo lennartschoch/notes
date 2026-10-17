@@ -9,7 +9,7 @@ import {
   updateNote,
 } from "../changes.js";
 import { getNote, listNotes } from "../store.js";
-import type { Note, Visibility } from "../types.js";
+import type { Actor, Note, Visibility } from "../types.js";
 
 // Every tool answers with plain text: notes are markdown documents, and an
 // agent reading them back works better with a readable body than with JSON
@@ -58,14 +58,14 @@ function notVisible(id: string, email: string): ToolOutput {
 // mapping the store's three outcomes onto tool results.
 async function writeContent(
   note: Note,
-  email: string,
+  actor: Actor,
   content: string,
   version: number | undefined,
 ): Promise<ToolOutput> {
   const expected = version ?? note.version;
-  const result = await updateNote(note.id, content, expected, email);
+  const result = await updateNote(note.id, content, expected, actor);
   if (result.status === "not_found") {
-    return fail(`Note "${note.id}" is no longer visible to ${email}.`);
+    return fail(`Note "${note.id}" is no longer visible to ${actor.email}.`);
   }
   if (result.status === "conflict") {
     return conflictNote(result.note, expected);
@@ -75,7 +75,10 @@ async function writeContent(
   );
 }
 
-export function registerTools(server: McpServer, email: string): void {
+export function registerTools(server: McpServer, actor: Actor): void {
+  // Reads and permissions key on the account; writes carry the full actor so a
+  // change made by an agent is attributed as one.
+  const email = actor.email;
   server.registerTool(
     "whoami",
     {
@@ -89,7 +92,7 @@ export function registerTools(server: McpServer, email: string): void {
       const notes = listNotes(email);
       const publicCount = notes.filter((n) => n.visibility === "public").length;
       return ok(
-        `Acting as ${email}. Visible notes: ${notes.length} (${publicCount} public, ${notes.length - publicCount} private).`,
+        `Acting as ${email}${actor.agent ? " (AI agent)" : ""}. Visible notes: ${notes.length} (${publicCount} public, ${notes.length - publicCount} private).`,
       );
     },
   );
@@ -271,7 +274,7 @@ export function registerTools(server: McpServer, email: string): void {
       if (title && !/^\s{0,3}#\s/.test(body)) {
         body = body.length > 0 ? `# ${title}\n\n${body}` : `# ${title}\n`;
       }
-      const finalNote = await createNote(body, email, visibility);
+      const finalNote = await createNote(body, actor, visibility);
       return ok(
         `Created note "${noteTitle(finalNote.content)}" (${finalNote.id}).\n${metaLine(finalNote)}`,
       );
@@ -301,7 +304,7 @@ export function registerTools(server: McpServer, email: string): void {
     async ({ id, content, version }): Promise<ToolOutput> => {
       const note = getNote(id, email);
       if (!note) return notVisible(id, email);
-      return writeContent(note, email, content, version);
+      return writeContent(note, actor, content, version);
     },
   );
 
@@ -335,7 +338,7 @@ export function registerTools(server: McpServer, email: string): void {
       const addition = heading ? `## ${content.trim()}\n` : content;
       const base = note.content.replace(/\s+$/, "");
       const merged = base.length > 0 ? `${base}\n\n${addition}` : addition;
-      return writeContent(note, email, merged, version);
+      return writeContent(note, actor, merged, version);
     },
   );
 
@@ -410,7 +413,7 @@ export function registerTools(server: McpServer, email: string): void {
       // `replace` with the global flag rewrites every match; when a single
       // match was required there is exactly one to rewrite.
       const updated = note.content.replace(pattern, replacement);
-      return writeContent(note, email, updated, version);
+      return writeContent(note, actor, updated, version);
     },
   );
 
@@ -432,7 +435,7 @@ export function registerTools(server: McpServer, email: string): void {
       const updated = await setNoteVisibility(
         id,
         visibility as Visibility,
-        email,
+        actor,
       );
       if (!updated) {
         return fail(
@@ -459,7 +462,7 @@ export function registerTools(server: McpServer, email: string): void {
     async ({ id }): Promise<ToolOutput> => {
       const note = getNote(id, email);
       if (!note) return notVisible(id, email);
-      const removed = await deleteNote(id, email);
+      const removed = await deleteNote(id, actor);
       if (!removed) {
         return fail(
           `Note "${id}" is owned by ${note.owner || "someone else"} and cannot be deleted by ${email}.`,
