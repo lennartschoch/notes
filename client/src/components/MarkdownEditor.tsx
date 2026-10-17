@@ -3,9 +3,15 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Markdown } from "@tiptap/markdown";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import { StarterKit } from "@tiptap/starter-kit";
-import type { Node } from "@tiptap/pm/model";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CARET_ANCHOR_CHARS, type LiveCursor } from "shared";
+import type { LiveCursor } from "shared";
+import {
+  caretAnchor,
+  caretColor,
+  positionOfText,
+  resolveCaretPosition,
+  type PeerCaret,
+} from "../carets";
 import { EditorToolbar } from "./EditorToolbar";
 import {
   DEFAULT_TODO_NAME,
@@ -23,76 +29,17 @@ const extensions = [
   Placeholder.configure({ placeholder: "Start typing…" }),
 ];
 
-// How much text is used to find the caret again after a markdown rewrite
-// (and, with it, by peers resolving a remote caret) — CARET_ANCHOR_CHARS
-// from `shared`, which is also the wire limit the server enforces.
-
-// Every character in the document with the position it sits at, so a caret can
-// be relocated in a document that was rebuilt from markdown.
-function textMap(doc: Node): { text: string; positions: number[] } {
-  let text = "";
-  const positions: number[] = [];
-  doc.descendants((node, position) => {
-    if (!node.isText || !node.text) return;
-    for (let offset = 0; offset < node.text.length; offset += 1) {
-      text += node.text[offset];
-      positions.push(position + offset);
-    }
+// Swap the whole document for rewritten markdown, keeping the caret where
+// it belongs: the content rewrite throws the selection away, so it is put
+// back after the same text it was sitting behind.
+function swapMarkdownKeepingCaret(editor: Editor, markdown: string) {
+  const anchor = caretAnchor(editor.state.doc, editor.state.selection.from);
+  editor.commands.setContent(markdown, {
+    contentType: "markdown",
+    emitUpdate: false,
   });
-  return { text, positions };
-}
-
-function caretAnchor(doc: Node, caret: number): string {
-  const { text, positions } = textMap(doc);
-  let end = positions.findIndex((position) => position >= caret);
-  if (end === -1) end = positions.length;
-  return text.slice(Math.max(0, end - CARET_ANCHOR_CHARS), end);
-}
-
-function positionOfText(doc: Node, anchor: string): number | null {
-  if (anchor.trim() === "") return null;
-  const { text, positions } = textMap(doc);
-  const index = text.indexOf(anchor);
-  if (index === -1) return null;
-  return (
-    positions[index + anchor.length] ?? positions[positions.length - 1] ?? null
-  );
-}
-
-// A remote caret, measured into pixels for the overlay layer.
-interface PeerCaret {
-  email: string;
-  left: number;
-  top: number;
-  height: number;
-  color: string;
-}
-
-// A stable color per person, so two peers are never the same shade.
-function caretColor(email: string): string {
-  let hash = 0;
-  for (let i = 0; i < email.length; i += 1) {
-    hash = (hash * 31 + email.charCodeAt(i)) | 0;
-  }
-  return `hsl(${Math.abs(hash) % 360} 72% 45%)`;
-}
-
-// Which document position a peer's caret refers to: trusted outright when
-// both copies still sit at the same version, otherwise relocated by the
-// text it sits behind, and clamped to the document as a last resort.
-function resolveCaretPosition(
-  caret: LiveCursor,
-  doc: Node,
-  ourVersion: number,
-): number | null {
-  if (caret.position === null) return null;
-  const size = doc.content.size;
-  if (caret.version === ourVersion && caret.position <= size) {
-    return caret.position;
-  }
-  const found = positionOfText(doc, caret.anchor);
-  if (found !== null) return found;
-  return Math.min(caret.position, size);
+  const position = positionOfText(editor.state.doc, anchor);
+  if (position !== null) editor.commands.setTextSelection(position);
 }
 
 // Swap the whole document for rewritten markdown. That throws the caret away,
@@ -103,13 +50,7 @@ function replaceMarkdown(
   markdown: string,
   onChange: (markdown: string) => void,
 ) {
-  const anchor = caretAnchor(editor.state.doc, editor.state.selection.from);
-  editor.commands.setContent(markdown, {
-    contentType: "markdown",
-    emitUpdate: false,
-  });
-  const position = positionOfText(editor.state.doc, anchor);
-  if (position !== null) editor.commands.setTextSelection(position);
+  swapMarkdownKeepingCaret(editor, markdown);
   onChange(markdown);
 }
 
@@ -230,10 +171,10 @@ function MarkdownEditor({
     if (!editor || lastRevision.current === revision) return;
     lastRevision.current = revision;
     if (editor.getMarkdown() === initialMarkdownRef.current) return;
-    editor.commands.setContent(initialMarkdownRef.current, {
-      contentType: "markdown",
-      emitUpdate: false,
-    });
+    // A remote snapshot must not move this tab's caret — without keeping it,
+    // the rewritten document parks the selection at its end, and this tab
+    // then broadcasts a caret its person never placed.
+    swapMarkdownKeepingCaret(editor, initialMarkdownRef.current);
   }, [editor, revision]);
 
   function launchTodoList() {

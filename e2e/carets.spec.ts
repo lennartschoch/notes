@@ -86,6 +86,87 @@ test("remote carets follow peers through edits and leave with them", async ({
       await expect(caret(bobPage, "alice@test")).toBeVisible();
     });
 
+    await test.step("three simultaneous peers each get their own caret and color", async () => {
+      // Charlie joins as a third tab: the overlay must hold more than one
+      // caret, and distinguish them by their per-person color.
+      const charlieContext = await browser.newContext({
+        extraHTTPHeaders: { "x-dev-user-email": "charlie@test" },
+      });
+      try {
+        const charliePage = await charlieContext.newPage();
+        await charliePage.goto("/");
+        await noteButton(charliePage, NOTE_TITLE).click();
+        await expect(
+          charliePage.locator('[title*="charlie@test"]'),
+        ).toHaveCount(
+          0, // no chip or caret for yourself
+        );
+        await charliePage.locator('[aria-label="Note content"]').click();
+        await charliePage.keyboard.insertText(" charlie was here");
+        await expect(caret(alicePage, "bob@test")).toBeVisible();
+        await expect(caret(alicePage, "charlie@test")).toBeVisible();
+        const colors = await alicePage.evaluate(() =>
+          [...document.querySelectorAll(".remote-caret")].map(
+            (el) => (el as HTMLElement).style.backgroundColor,
+          ),
+        );
+        expect(colors).toHaveLength(2);
+        expect(new Set(colors).size).toBe(2);
+      } finally {
+        await charlieContext.close();
+      }
+      await expect(caret(alicePage, "charlie@test")).toHaveCount(0);
+    });
+
+    await test.step("carets stay glued to their line while the document scrolls", async () => {
+      // Make Alice's copy tall enough to scroll inside the editor pane.
+      await appendToNote(
+        alicePage,
+        Array.from({ length: 40 }, (_, i) => `\nfiller line ${i}`).join(""),
+      );
+      await expect(editor(alicePage)).toContainText("filler line 39");
+      await expect(editor(bobPage)).toContainText("filler line 39");
+      await expect(caret(alicePage, "bob@test")).toBeVisible();
+      const measure = () =>
+        alicePage.evaluate(() => {
+          const caretEl = document.querySelector(".remote-caret")!;
+          const c = caretEl.getBoundingClientRect();
+          const lines = [...document.querySelectorAll(".tiptap p")].map((p) => {
+            const r = p.getBoundingClientRect();
+            return { top: r.top, bottom: r.bottom };
+          });
+          const line = lines.findIndex(
+            (p) => c.top >= p.top - 3 && c.top <= p.bottom + 3,
+          );
+          const scroller = caretEl.closest(".overflow-y-auto")!;
+          return {
+            line,
+            scrollTop: scroller.scrollTop,
+            caretTop: Math.round(c.top),
+          };
+        });
+      const before = await measure();
+      expect(before.line).toBeGreaterThan(-1);
+      // Alice just typed at the end, so the scroller may already sit at the
+      // bottom: pick a direction with room to move.
+      const delta = await alicePage.evaluate(() => {
+        const s = document
+          .querySelector(".remote-caret")!
+          .closest(".overflow-y-auto")!;
+        const step = s.scrollTop >= 150 ? -150 : 150;
+        s.scrollBy(0, step);
+        return step;
+      });
+      await alicePage.waitForTimeout(400);
+      const after = await measure();
+      // The overlay lives inside the scrolled content: the caret travels
+      // with its text — same line, viewport top shifted by exactly the
+      // scroll — instead of drifting over unrelated lines.
+      expect(after.scrollTop).toBe(before.scrollTop + delta);
+      expect(after.line).toBe(before.line);
+      expect(after.caretTop).toBe(before.caretTop - delta);
+    });
+
     await test.step("a peer leaving clears their caret instead of ghosting it", async () => {
       await bobPage.close();
       await expect(caret(alicePage, "bob@test")).toHaveCount(0);
@@ -102,5 +183,110 @@ test("remote carets follow peers through edits and leave with them", async ({
   } finally {
     await aliceContext.close();
     await bobContext.close();
+  }
+});
+
+// The relay must not forward nonsense it was handed: positions cannot be
+// negative, anchors cannot exceed the protocol's budget, and versions must
+// be numbers. Frames can come from any authenticated tab, so the trust
+// boundary is the socket, not the app.
+test("the live server sanitizes malformed caret frames", async ({
+  browser,
+  playwright,
+  baseURL,
+}) => {
+  const aliceApi = await playwright.request.newContext({
+    baseURL,
+    extraHTTPHeaders: ALICE,
+  });
+  // A bare context: no identity header, so the socket's ?email= query is
+  // what the server reads. A headered context would quietly arrive as that
+  // user, and the app itself would publish real carets into the probe note.
+  const probeContext = await browser.newContext();
+  try {
+    const note = await (
+      await aliceApi.post("/api/notes", {
+        data: { content: "Sanitizer probe note" },
+      })
+    ).json();
+    await aliceApi.patch(`/api/notes/${note.id}`, {
+      data: { visibility: "public" },
+    });
+
+    const probePage = await probeContext.newPage();
+    await probePage.goto(baseURL);
+    // Raw sockets from inside a page: this test speaks the wire protocol,
+    // not the UI, so the server's validation is under test, not the app's.
+    // They connect as charlie: the page's own app (bob) auto-opens the note
+    // and publishes its caret into the same room, and its frames are not
+    // what this test is about.
+    const received = await probePage.evaluate(
+      async ([wsBase, noteId]: [string, string]) => {
+        const open = () =>
+          new Promise<WebSocket>((resolve, reject) => {
+            const w = new WebSocket(`${wsBase}/ws?email=charlie@test`);
+            w.onopen = () => resolve(w);
+            w.onerror = () => reject(new Error("socket error"));
+            w.onclose = (e) => reject(new Error(`closed ${e.code}`));
+            setTimeout(() => reject(new Error("open timeout")), 5000);
+          });
+        const spammer = await open();
+        const watcher = await open();
+        const got: unknown[] = [];
+        watcher.onmessage = (e) => {
+          const message = JSON.parse(String(e.data));
+          if (
+            message.type === "cursor" &&
+            message.cursor.email === "charlie@test"
+          )
+            got.push(message.cursor);
+        };
+        spammer.send(JSON.stringify({ type: "subscribe", noteId }));
+        watcher.send(JSON.stringify({ type: "subscribe", noteId }));
+        await new Promise((r) => setTimeout(r, 300));
+        spammer.send(
+          JSON.stringify({
+            type: "cursor",
+            noteId,
+            position: -5,
+            anchor: "x".repeat(500),
+            version: 1.5,
+          }),
+        );
+        spammer.send(
+          JSON.stringify({
+            type: "cursor",
+            noteId,
+            position: 2,
+            anchor: "y".repeat(500),
+            version: "seven",
+          }),
+        );
+        await new Promise((r) => setTimeout(r, 300));
+        spammer.close();
+        watcher.close();
+        return got;
+      },
+      [(baseURL ?? "").replace(/^http/, "ws"), note.id] as [string, string],
+    );
+
+    const [negative, bogus] = received as [
+      { position: number | null; anchor: string; version: number },
+      { position: number | null; anchor: string; version: number },
+    ];
+    // A negative position arrives as a clearing, not as position -5.
+    expect(negative.position).toBeNull();
+    expect(negative.anchor).toBe("");
+    // A non-numeric version falls back to 0, and the oversized anchor is
+    // cut to the protocol budget instead of flooding the room.
+    expect(bogus.position).toBe(2);
+    expect(bogus.version).toBe(0);
+    expect(bogus.anchor.length).toBeGreaterThan(0);
+    expect(bogus.anchor.length).toBeLessThanOrEqual(24);
+
+    await aliceApi.delete(`/api/notes/${note.id}`);
+  } finally {
+    await aliceApi.dispose();
+    await probeContext.close();
   }
 });
