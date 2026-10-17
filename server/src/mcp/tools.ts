@@ -1,8 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  DEFAULT_TODO_NAME,
   noteTitle,
   searchContent,
+  startTodoMarkdown,
+  todoDayHeadings,
+  todoName,
   anchorFromText,
   escapeRegExp,
   type SearchResults,
@@ -157,6 +161,9 @@ export function registerTools(server: McpServer, actor: Actor): void {
       });
     }
     const expected = version ?? note.version;
+    // The day headings the note had before this write. `note` is the store's own
+    // object, so its text is the incoming one as soon as the write lands.
+    const daysBefore = new Set(todoDayHeadings(note.content));
     const result = await updateNote(note.id, content, expected, actor);
     if (result.status === "not_found") {
       return fail(`Note "${note.id}" is no longer visible to ${email}.`);
@@ -165,6 +172,19 @@ export function registerTools(server: McpServer, actor: Actor): void {
       return conflictNote(result.note, expected, edit.local);
     }
     const saved = result.note;
+    // A list's day headings are the app's own doing: each one names the day an
+    // item was ticked, which is a fact about the edit rather than a section to
+    // invent. Only what the write itself added counts — filing happens after
+    // this, on the server's copy — so an agent that ticked a box hears nothing,
+    // and one that typed out a date heading is told once what it should send.
+    const invented =
+      todoName(content) === null
+        ? []
+        : todoDayHeadings(content).filter((day) => !daysBefore.has(day));
+    const days =
+      invented.length > 0
+        ? `\nNote: a to-do list writes its own "## date" headings when a box is ticked, and this write added ${invented.length === 1 ? "one" : `${invented.length}`} of its own. To move an item to a day, change "- [ ]" to "- [x]" instead.`
+        : "";
     // A write that files a ticked item does not store quite the text that was
     // sent: the item moved down the note under its day. The caret that wrote it
     // is carried across by the words it sat behind, which is what people
@@ -179,7 +199,7 @@ export function registerTools(server: McpServer, actor: Actor): void {
           });
     carets.show(saved, caret, "editing");
     return ok({
-      content: `Saved note "${noteTitle(saved.content)}" (${saved.id}) → v${saved.version}.\n${metaLine(saved)}`,
+      content: `Saved note "${noteTitle(saved.content)}" (${saved.id}) → v${saved.version}.\n${metaLine(saved)}${days}`,
       at: { caret, note: saved },
     });
   }
@@ -722,6 +742,92 @@ export function registerTools(server: McpServer, actor: Actor): void {
       return save(note, updated, version, {
         caret: Math.max(0, Math.min(caret, updated.length)),
         says: `Replaced ${matches.length > 1 ? `${matches.length}× ` : `"${last[0]}"`} in note "${noteTitle(updated)}"`,
+        local: true,
+      });
+    },
+  );
+
+  server.registerTool(
+    "start_todo_list",
+    {
+      title: "Start a to-do list",
+      description:
+        "Turn a note into a rolling to-do list, or start a new one. Its lines become open items, and from then on ticking a box files the item under the day it was ticked - so the day headings belong to the app: tick boxes, and leave the headings alone. Give `id` to launch a note that exists; without it a new note is made from `content`. A note that is already a list is left exactly as it is, and what a list is called belongs to the person who owns it, not to you.",
+      inputSchema: {
+        id: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Note to turn into a list, as shown by list_notes. Omit it to create a new note instead.",
+          ),
+        name: z
+          .string()
+          .optional()
+          .describe(
+            `What the list is called, written into its heading as "# Todo · name". Defaults to "${DEFAULT_TODO_NAME}". The heading belongs to the person who owns the note: pass this once, and never rename by editing the heading.`,
+          ),
+        content: z
+          .string()
+          .optional()
+          .describe(
+            "Only with no `id`: lines to turn into the open items of the new list.",
+          ),
+        visibility: z
+          .enum(["private", "public"])
+          .optional()
+          .describe(
+            "Only with no `id`: visibility for the new note (default private).",
+          ),
+        version: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(VERSION_DESCRIPTION),
+      },
+      annotations: { destructiveHint: false, idempotentHint: false },
+    },
+    async ({ id, name, content, visibility, version }): Promise<ToolOutput> => {
+      // The name always comes from the same place: an agent that says nothing
+      // gets the default the app itself offers, never a guess at its own.
+      const listName = name?.trim() || DEFAULT_TODO_NAME;
+
+      if (id === undefined) {
+        const created = await createNote(
+          startTodoMarkdown(content ?? "", listName),
+          actor,
+          visibility,
+        );
+        return ok({
+          content: `Created to-do list "${listName}" (${created.id}).\n${metaLine(created)}`,
+        });
+      }
+
+      const note = getNote(id, email);
+      if (!note) return notVisible(id, email);
+      if (content !== undefined || visibility !== undefined) {
+        // Better a refusal than a write that quietly drops half of what was sent.
+        return fail(
+          `"${content === undefined ? "visibility" : "content"}" only applies to a new list, not to the existing note "${id}". Add items with type_in_note or append_to_note, and change who can see it with set_note_visibility.`,
+        );
+      }
+
+      const launched = todoName(note.content);
+      if (launched !== null) {
+        return ok({
+          content: `Note "${noteTitle(note.content)}" (${id}) is already ${
+            launched.length > 0
+              ? `the to-do list "${launched}"`
+              : "a to-do list"
+          }; nothing changed. What a list is called is the heading the person gave it, so leave the name to them.`,
+        });
+      }
+
+      const started = startTodoMarkdown(note.content, listName);
+      return save(note, started, version, {
+        caret: started.length,
+        says: `Started the to-do list "${listName}"`,
         local: true,
       });
     },

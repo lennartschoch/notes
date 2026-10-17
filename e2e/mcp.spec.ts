@@ -60,6 +60,19 @@ function noteId(text: string): string {
   return String(match?.[1]);
 }
 
+// The markdown the server holds for a note, read the way the web app reads it.
+async function savedContent(
+  request: APIRequestContext,
+  email: string,
+  id: string,
+): Promise<string> {
+  const response = await request.get(`/api/notes/${id}`, {
+    headers: { "x-dev-user-email": email },
+  });
+  expect(response.ok()).toBe(true);
+  return String((await response.json()).content);
+}
+
 // A to-do list files ticked items under a heading named for the day they were
 // ticked, which is a local date, so the spec expects the heading the server
 // writes rather than inventing one.
@@ -88,6 +101,7 @@ test.describe("MCP server", () => {
           "update_note",
           "append_to_note",
           "replace_in_note",
+          "start_todo_list",
           "set_note_visibility",
           "delete_note",
         ]),
@@ -320,13 +334,7 @@ test.describe("MCP server", () => {
     // left the item in the open list — and the next person to type in the note
     // filed it under their own day. One identity, one note, no browser.
     const agent = await connectAsAgent(ALICE);
-    const stored = async (note: string): Promise<string> => {
-      const response = await request.get(`/api/notes/${note}`, {
-        headers: { "x-dev-user-email": ALICE },
-      });
-      expect(response.ok()).toBe(true);
-      return String((await response.json()).content);
-    };
+    const stored = (note: string) => savedContent(request, ALICE, note);
 
     try {
       const created = await call(agent, "create_note", {
@@ -364,6 +372,103 @@ test.describe("MCP server", () => {
       );
 
       await call(agent, "delete_note", { id });
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("launches a to-do list, then keeps its own end of the bargain", async ({
+    request,
+  }) => {
+    // The shape of a list used to be something an agent could only imitate by
+    // hand: the heading that makes a note a list, the open items, the day
+    // headings. Now one call launches it, and the edits after it are ordinary.
+    const agent = await connectAsAgent(ALICE);
+    try {
+      const created = await call(agent, "create_note", {
+        content: `buy milk\nbook the mover`,
+      });
+      const id = noteId(out(created));
+
+      const launched = await call(agent, "start_todo_list", {
+        id,
+        name: `Errands ${run}`,
+      });
+      expect(out(launched)).toContain("\u2192 v1");
+      expect(await savedContent(request, ALICE, id)).toBe(
+        `# Todo · Errands ${run}\n\n- [ ] buy milk\n- [ ] book the mover`,
+      );
+
+      // Launching is not renaming: the name a list was given stays put.
+      const again = await call(agent, "start_todo_list", {
+        id,
+        name: "Renamed",
+      });
+      expect(out(again)).toContain("already the to-do list");
+      expect(out(again)).toContain(`"Errands ${run}"`);
+      expect(await savedContent(request, ALICE, id)).toContain(
+        `# Todo · Errands ${run}`,
+      );
+
+      // Half a call is refused rather than quietly ignored.
+      const mixed = await call(agent, "start_todo_list", {
+        id,
+        content: "and a lightbulb",
+      });
+      expect(mixed.isError).toBe(true);
+      expect(out(mixed)).toContain("only applies to a new list");
+
+      // Ticking a box is the whole edit, and the list files the item itself.
+      expect(
+        out(
+          await call(agent, "replace_in_note", {
+            id,
+            find: "- [ ] buy milk",
+            replacement: "- [x] buy milk",
+          }),
+        ),
+      ).toContain("\u2192 v2");
+      expect(await savedContent(request, ALICE, id)).toBe(
+        `# Todo · Errands ${run}\n\n- [ ] book the mover\n\n## ${TODAY}\n\n- [x] buy milk`,
+      );
+
+      // A day heading an agent wrote for itself is answered with the rule.
+      const handFiled = await call(agent, "update_note", {
+        id,
+        content: `# Todo · Errands ${run}\n\n- [ ] book the mover\n\n## 2019-04-01\n\n- [x] buy milk`,
+      });
+      expect(out(handFiled)).toContain("writes its own");
+
+      await call(agent, "delete_note", { id });
+    } finally {
+      await agent.close();
+    }
+  });
+
+  test("starts a list that does not have a note yet", async ({ request }) => {
+    const agent = await connectAsAgent(ALICE);
+    try {
+      const created = await call(agent, "start_todo_list", {
+        name: `Bin day ${run}`,
+        content: "sharpen the shears\ncancel the gym",
+      });
+      expect(out(created)).toContain(`Created to-do list "Bin day ${run}"`);
+      const id = noteId(out(created));
+      expect(await savedContent(request, ALICE, id)).toBe(
+        `# Todo · Bin day ${run}\n\n- [ ] sharpen the shears\n- [ ] cancel the gym`,
+      );
+
+      // Ask for nothing and you get what the app offers by default: its name for
+      // an unnamed list, and one empty item to type into.
+      const blank = await call(agent, "start_todo_list", {});
+      expect(out(blank)).toContain(`Created to-do list "My to-dos"`);
+      const blankId = noteId(out(blank));
+      expect(await savedContent(request, ALICE, blankId)).toBe(
+        `# Todo · My to-dos\n\n- [ ] `,
+      );
+
+      await call(agent, "delete_note", { id });
+      await call(agent, "delete_note", { id: blankId });
     } finally {
       await agent.close();
     }

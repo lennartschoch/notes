@@ -122,6 +122,7 @@ must resolve to one.
 | `type_in_note`        | Types at the agent's caret: words, one word, pasted text, a link                                  |
 | `update_note`         | Replace a whole note                                                                              |
 | `append_to_note`      | Add markdown to the end, optionally under a new `##` heading                                      |
+| `start_todo_list`     | Turn a note into a to-do list, or start one (`name`, `content`)                                   |
 | `replace_in_note`     | Find/replace inside a note as plain text (`regex`) or a pattern, single match unless `all` is set |
 | `set_note_visibility` | Private ↔ public (owner only)                                                                     |
 | `delete_note`         | Delete permanently (owner only)                                                                   |
@@ -192,6 +193,15 @@ the `Todo` line is never touched.
 "Today" is the day on the app's own clock, the server's local date — the same
 calendar the person using the app is on, which is what the web editor files under
 too.
+
+An ordinary note becomes a list through `start_todo_list`: its lines become open
+items and its first line becomes the `# Todo · name` heading. Give it the `id` of
+a note you can already see, or none to make the note as well. What a list is
+called belongs to the person who owns it — launching a list again changes nothing,
+rather than renaming it.
+
+A write that arrives with a `## date` heading the note did not have is saved all
+the same, and answered with a line saying the list writes those itself.
 
 ## Being seen as an agent
 

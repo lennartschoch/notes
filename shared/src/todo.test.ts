@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isTodoMarkdown, reconcileTodoMarkdown } from "./todo.js";
+import {
+  isTodoMarkdown,
+  reconcileTodoMarkdown,
+  startTodoMarkdown,
+  todoDayHeadings,
+  todoName,
+} from "./todo.js";
 
 // The rules of a rolling to-do list, as the write path applies them. Both the
 // server and the web editor run `reconcileTodoMarkdown` on the same text, so
@@ -87,4 +93,41 @@ test("an ordinary note is not a to-do list, and is not touched", () => {
   const note = `- [ ] call the bank\n- [x] pay the roof bill\n`;
   assert.ok(!isTodoMarkdown(note));
   assert.equal(reconcileTodoMarkdown(note, TODAY), null);
+});
+
+test("launching a note makes its lines the open items", () => {
+  assert.equal(
+    startTodoMarkdown("- buy milk\n- book the mover", `Groceries`),
+    `# Todo · Groceries\n\n- [ ] buy milk\n- [ ] book the mover`,
+  );
+});
+
+test("an empty list still has an item to type into", () => {
+  assert.equal(
+    startTodoMarkdown("", "Groceries"),
+    `# Todo · Groceries\n\n- [ ] `,
+  );
+});
+
+test("a list is launched once, and keeps the name it was given", () => {
+  const list = `# Todo · Groceries\n\n- [ ] eggs`;
+  assert.equal(startTodoMarkdown(list, "Something else"), list);
+  assert.equal(todoName(list), "Groceries");
+  assert.equal(todoName("# Groceries\n\n- buy milk"), null);
+});
+
+test("a name reaches the heading as one line", () => {
+  assert.ok(
+    startTodoMarkdown("milk", "Groceries\n\ton the way home").startsWith(
+      "# Todo · Groceries on the way home\n",
+    ),
+  );
+});
+
+test("the days a list files under are the headings it carries", () => {
+  const list =
+    `# Todo · House\n\n- [ ] order frames\n\n` +
+    `## ${PAST}\n\n- [x] clear the desk\n\n## ${TODAY}\n\n- [x] fix the lamp`;
+  assert.deepEqual(todoDayHeadings(list), [PAST, TODAY]);
+  assert.deepEqual(todoDayHeadings("# Groceries\n\n## Notes"), []);
 });

@@ -65,9 +65,30 @@ export function isTodoMarkdown(markdown: string): boolean {
   return markdown.split("\n").some((line) => TITLE_RE.test(line.trim()));
 }
 
+/**
+ * The name a note gives its list, or null when the note is not a to-do list.
+ * An unnamed list — a note whose heading is plain `# Todo` — has an empty one.
+ */
+export function todoName(markdown: string): string | null {
+  const title = markdown.split("\n").find((line) => TITLE_RE.test(line.trim()));
+  return title === undefined ? null : nameOf(title);
+}
+
 function dateOf(line: string, pattern: RegExp): string | null {
   const match = line.trim().match(pattern);
   return match ? match[1] : null;
+}
+
+/**
+ * The days a list files items under, in the order they are written. These
+ * headings are the app's own doing, so a write that adds one to a note that is
+ * already a list says so rather than trusting it.
+ */
+export function todoDayHeadings(markdown: string): string[] {
+  return markdown
+    .split("\n")
+    .map((line) => (line.startsWith("#") ? dateOf(line, DAY_RE) : null))
+    .filter((day): day is string => day !== null);
 }
 
 /** Checkbox state of a top-level task line, or null when it is not one. */
@@ -225,7 +246,9 @@ export function startTodoMarkdown(markdown: string, name: string): string {
     doc.open.blocks.push({ lines: [EMPTY_ITEM], blankBefore: true });
   }
   doc.days.sort(byDateDesc);
-  doc.name = name.trim();
+  // The name is written into a heading, so it cannot be given one: whatever
+  // arrives is the list's name on a single line.
+  doc.name = name.replace(/\s+/g, " ").trim();
 
   return serialize(doc);
 }
