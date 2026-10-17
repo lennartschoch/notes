@@ -174,6 +174,25 @@ so sending the same call again without a version applies the change to the new
 text. A whole-document `update_note` deliberately gets no such advice - re-sending
 it would overwrite whatever the other person wrote.
 
+## To-do lists
+
+A note whose first line is `# Todo · name` is a rolling to-do list: open items at
+the top, and everything ever ticked filed under a `## YYYY-MM-DD` heading for the
+day it was ticked.
+
+Ticking a box is the whole edit an agent makes to that shape — change `- [ ]` to
+`- [x]` and nothing else. The app files the item for you, as the write is saved:
+it moves under the heading for its day, and emptying a box brings it back out of
+the day it was filed in. So do not move items between day headings yourself, do
+not write those headings, and do not be surprised when a read shows your edit
+where you did not leave it — that is the list tidying itself. A note that arrives
+with several ticked items has them all filed by the same rule, and a note without
+the `Todo` line is never touched.
+
+"Today" is the day on the app's own clock, the server's local date — the same
+calendar the person using the app is on, which is what the web editor files under
+too.
+
 ## Being seen as an agent
 
 An agent edits the same notes as the person it acts as, but it should not look

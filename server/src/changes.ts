@@ -1,3 +1,4 @@
+import { reconcileTodoMarkdown, todoDate } from "shared";
 import { noteRemoved, scheduleNoteChange } from "./notifier.js";
 import { noteChanged } from "./mcp/hub.js";
 import {
@@ -16,6 +17,22 @@ import type { Actor, Note, Visibility } from "./types.js";
 // shared note is shared with, and staleness notifications for the MCP
 // sessions that watch note:// resources. Reading stays on store.ts.
 
+// A to-do list keeps its ticked items under a heading for the day they were
+// ticked, and the note only reaches that shape once the tick has been filed.
+// Filing it here — rather than in whichever surface happened to receive the
+// tick — is what lets an agent tick an item in a note nobody has open, and what
+// stops a ticked item surfacing days later, filed under the day some other person
+// happened to edit the note.
+//
+// The day is the server's own. This is a self-hosted app, so that is the
+// calendar the person using it is on, and it is the day the web editor files
+// under too: the browser files its own ticks as it types them, which is why a
+// human's tick keeps its local day, and filing text that is already filed is a
+// no-op the two callers cannot disagree about.
+function fileTickedItems(content: string): string {
+  return reconcileTodoMarkdown(content, todoDate()) ?? content;
+}
+
 // Announce a saved note: push-notify the people who did not just edit it (only
 // public notes have other people), tell the MCP sessions, and push the snapshot
 // to whoever has the note open. Presence is not announced here: a human's own tab
@@ -32,7 +49,7 @@ export async function createNote(
   actor: Actor,
   visibility?: Visibility,
 ): Promise<Note> {
-  const note = await storeCreateNote(content, actor.email);
+  const note = await storeCreateNote(fileTickedItems(content), actor.email);
   const finalNote =
     visibility && visibility !== note.visibility
       ? ((await storeSetNoteVisibility(note.id, visibility, actor.email)) ??
@@ -53,7 +70,7 @@ export async function updateNote(
 ): Promise<UpdateResult> {
   const result = await storeUpdateNote(
     id,
-    content,
+    fileTickedItems(content),
     version,
     actor.email,
     baseContent,

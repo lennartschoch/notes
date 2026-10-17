@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   noteTitle,
   searchContent,
+  anchorFromText,
   escapeRegExp,
   type SearchResults,
 } from "shared";
@@ -20,6 +21,7 @@ import {
   linkMarkdown,
   noteView,
   placeOf,
+  relocateCaret,
   resolveCaret,
   defuseLinks,
   typeText,
@@ -163,7 +165,18 @@ export function registerTools(server: McpServer, actor: Actor): void {
       return conflictNote(result.note, expected, edit.local);
     }
     const saved = result.note;
-    const caret = Math.min(edit.caret, saved.content.length);
+    // A write that files a ticked item does not store quite the text that was
+    // sent: the item moved down the note under its day. The caret that wrote it
+    // is carried across by the words it sat behind, which is what people
+    // watching the note see, rather than by an offset into a different document.
+    const position = Math.min(edit.caret, content.length);
+    const caret =
+      saved.content === content
+        ? position
+        : relocateCaret(saved.content, {
+            position,
+            anchor: anchorFromText(content, position),
+          });
     carets.show(saved, caret, "editing");
     return ok({
       content: `Saved note "${noteTitle(saved.content)}" (${saved.id}) → v${saved.version}.\n${metaLine(saved)}`,

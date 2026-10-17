@@ -247,6 +247,45 @@ test("typing adds items, ticking files them, typing carries on", async ({
   await context.close();
 });
 
+test("files a tick that arrived from outside the editor", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
+  const name = `From the agent ${run}`;
+  // A write that is not this editor — an agent's tools, an edit queued offline
+  // — arrives with a ticked item still sitting in the open list, which is a
+  // shape the editor itself never saves.
+  const id = await seedNote(
+    context,
+    `# Todo · ${name}\n\n- [x] renew the passport\n- [ ] buy tape\n`,
+  );
+
+  // Filing happens as the note is saved, so what reaches the store is a list:
+  // the ticked item on the day it was ticked, the open list only open things.
+  await expect
+    .poll(() => contentOf(context, id), { timeout: 10_000 })
+    .toBe(
+      `# Todo · ${name}\n\n- [ ] buy tape\n\n## ${TODAY}\n\n- [x] renew the passport`,
+    );
+
+  const page = await openNote(context, name);
+  await expect(editor(page).locator("h2")).toHaveText(TODAY);
+  await expectCheckboxes(page, 2, 1);
+
+  // The item keeps that day: a person editing the list afterwards must not
+  // pull an already-filed item back into the present.
+  await openItemTexts(page).last().click();
+  await page.keyboard.press("End");
+  await page.keyboard.type(" (the small roll)");
+  await expect
+    .poll(() => contentOf(context, id), { timeout: 10_000 })
+    .toContain(`## ${TODAY}\n\n- [x] renew the passport`);
+  await expect(editor(page).locator("h2")).toHaveText(TODAY);
+  await expectCheckboxes(page, 2, 1);
+
+  await context.close();
+});
+
 test("renaming a list keeps it a to-do list", async ({ browser }) => {
   const context = await browser.newContext({ extraHTTPHeaders: HEADERS });
   const name = `My to-dos ${run}`;

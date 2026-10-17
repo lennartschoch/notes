@@ -109,7 +109,9 @@ function MarkdownEditor({
     contentType: "markdown",
     onUpdate: ({ editor: current }) => {
       const markdown = current.getMarkdown();
-      // Ticking an item files it under today, which rewrites the note.
+      // Ticking an item files it under today, which rewrites the note. The
+      // server files the same tick on the write, so this is the rule applied
+      // early — for the person's own day — not a second copy of it.
       const filed = reconcileTodoMarkdown(markdown, todoDate());
       if (filed !== null) {
         replaceMarkdown(current, filed, onChangeRef.current);

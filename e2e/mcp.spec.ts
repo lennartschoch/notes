@@ -33,6 +33,12 @@ async function connectAs(email: string): Promise<Client> {
   return connect({ "x-dev-user-email": email });
 }
 
+// An MCP connection the app treats as an agent rather than as the person whose
+// account it uses (see server/src/mcp/auth.ts).
+async function connectAsAgent(email: string): Promise<Client> {
+  return connect({ "x-dev-user-email": email, "x-dev-agent": "1" });
+}
+
 async function call(
   client: Client,
   name: string,
@@ -53,6 +59,17 @@ function noteId(text: string): string {
   expect(match).not.toBeNull();
   return String(match?.[1]);
 }
+
+// A to-do list files ticked items under a heading named for the day they were
+// ticked, which is a local date, so the spec expects the heading the server
+// writes rather than inventing one.
+function isoDate(date: Date): string {
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+const TODAY = isoDate(new Date());
 
 test.describe("MCP server", () => {
   test("offers the note tools and resources to a signed-in agent", async () => {
@@ -292,6 +309,63 @@ test.describe("MCP server", () => {
       await call(client, "delete_note", { id });
     } finally {
       await client.close();
+    }
+  });
+
+  test("files a ticked item on the day an agent ticked it, with no editor open", async ({
+    request,
+  }) => {
+    // A to-do list keeps its ticked items under a heading for the day they were
+    // ticked. That rule used to live only in the web editor, so an agent's tick
+    // left the item in the open list — and the next person to type in the note
+    // filed it under their own day. One identity, one note, no browser.
+    const agent = await connectAsAgent(ALICE);
+    const stored = async (note: string): Promise<string> => {
+      const response = await request.get(`/api/notes/${note}`, {
+        headers: { "x-dev-user-email": ALICE },
+      });
+      expect(response.ok()).toBe(true);
+      return String((await response.json()).content);
+    };
+
+    try {
+      const created = await call(agent, "create_note", {
+        content: `# Todo · Desk ${run}\n\n- [ ] fix the lamp\n- [x] clear the drawers\n`,
+      });
+      expect(created.isError).toBeUndefined();
+      const id = noteId(out(created));
+
+      // The tick that arrived with the note was filed on the way in.
+      expect(await stored(id)).toBe(
+        `# Todo · Desk ${run}\n\n- [ ] fix the lamp\n\n## ${TODAY}\n\n- [x] clear the drawers`,
+      );
+
+      // Ticking the other item is a whole edit by itself: nobody has to open
+      // the note in a browser for the item to land on the day it was ticked.
+      const ticked = await call(agent, "replace_in_note", {
+        id,
+        find: "- [ ] fix the lamp",
+        replacement: "- [x] fix the lamp",
+      });
+      expect(out(ticked)).toContain("\u2192 v1");
+      expect(await stored(id)).toBe(
+        `# Todo · Desk ${run}\n\n## ${TODAY}\n\n- [x] clear the drawers\n- [x] fix the lamp`,
+      );
+
+      // And emptying a box brings the item back out of the day it filed in.
+      const reopened = await call(agent, "replace_in_note", {
+        id,
+        find: "- [x] fix the lamp",
+        replacement: "- [ ] fix the lamp",
+      });
+      expect(out(reopened)).toContain("\u2192 v2");
+      expect(await stored(id)).toBe(
+        `# Todo · Desk ${run}\n\n- [ ] fix the lamp\n\n## ${TODAY}\n\n- [x] clear the drawers`,
+      );
+
+      await call(agent, "delete_note", { id });
+    } finally {
+      await agent.close();
     }
   });
 
