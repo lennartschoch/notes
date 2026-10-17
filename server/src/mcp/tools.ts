@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { noteTitle, searchContent, type SearchResults } from "shared";
-import { fullNote, listLines, metaLine, stamp } from "./format.js";
+import { listLines, metaLine, readNote, stamp } from "./format.js";
 import {
   createNote,
   deleteNote,
@@ -9,16 +9,57 @@ import {
   updateNote,
 } from "../changes.js";
 import { getNote, listNotes } from "../store.js";
+import { createCarets } from "./cursor.js";
+import {
+  isLinkUrl,
+  linkMarkdown,
+  noteView,
+  placeOf,
+  resolveCaret,
+  defuseLinks,
+  typeText,
+  type CursorTarget,
+  type TypingOptions,
+} from "./text.js";
 import type { Actor, Note, Visibility } from "../types.js";
 
 // Every tool answers with plain text: notes are markdown documents, and an
 // agent reading them back works better with a readable body than with JSON
-// wrapped around it. Metadata (most importantly `version`, which writes need)
-// is always printed alongside.
+// wrapped around it. Metadata (most importantly `version`, which writes need) is
+// always printed alongside.
 type ToolOutput = { content: [{ type: "text"; text: string }]; isError?: true };
 
-function ok(text: string): ToolOutput {
-  return { content: [{ type: "text", text }] };
+// A tool's answer, plus where it leaves the agent's caret in the note. The app
+// turns that into the line and column an agent can address again, and into the
+// caret people watching the note see — so an agent never has to track its own
+// position, and never gets to describe its own identity either.
+interface ToolResult {
+  content: string;
+  at?: { caret: number; note: Note };
+}
+
+function where({ caret, note }: { caret: number; note: Note }): string {
+  const place = placeOf(note.content, caret);
+  const line = noteView(note.content, {
+    from: place.line,
+    lines: 1,
+    caret,
+  }).view;
+  // The column is the insertion point itself, exactly as `column` takes it back
+  // and exactly where the `|` below sits, so what an agent is told and what it
+  // can send are the same number.
+  return `\nYour caret: line ${place.line}, column ${place.column}.\n${line}`;
+}
+
+function ok(result: ToolResult): ToolOutput {
+  return {
+    content: [
+      {
+        type: "text",
+        text: result.at ? result.content + where(result.at) : result.content,
+      },
+    ],
+  };
 }
 
 function fail(text: string): ToolOutput {
@@ -29,15 +70,25 @@ const ID_DESCRIPTION =
   "Note id, as shown by list_notes / search_notes, or from a note://… resource link.";
 const VERSION_DESCRIPTION =
   "The note version you last read. Omit it to write against the newest version; supply it to make the write fail instead of clobbering a concurrent edit.";
+const ADDRESS_DESCRIPTION =
+  "Where in the note: `after`/`before` some words of it (copied exactly), or `line` and optional `column` as read_note numbers them, or `offset` in characters. Omit them all to work at your caret, which is where your last read or edit left it.";
 
 // Printed when a versioned write lost a race, with the current text inline so
-// the caller can re-apply its change without another round trip.
-function conflictNote(note: Note, sentVersion: number): ToolOutput {
+// the caller can re-apply its change without another round trip. A localised
+// edit gets more than that: the tool works out its own text from whatever the
+// note says now, so sending it again without a version is a real retry.
+function conflictNote(
+  note: Note,
+  sentVersion: number,
+  local?: boolean,
+): ToolOutput {
   return fail(
     [
       `Conflict: note "${note.id}" is at version ${note.version}, your edit was based on version ${sentVersion} (changed ${stamp(note.updatedAt)}).`,
-      "Nothing was saved. Re-apply your change against the current content below, then retry with version: " +
-        note.version,
+      "Nothing was saved." +
+        (local
+          ? ` Somebody else changed the note after you read it. Send the same call again without a version to make your change to the note as it now stands, or re-apply it against the content below and retry with version ${note.version}.`
+          : ` Re-apply your change against the current content below, then retry with version ${note.version}.`),
       "",
       "---",
       "",
@@ -54,31 +105,67 @@ function notVisible(id: string, email: string): ToolOutput {
   );
 }
 
-// Applies a whole-content write, resolving the version the caller meant and
-// mapping the store's three outcomes onto tool results.
-async function writeContent(
-  note: Note,
-  actor: Actor,
-  content: string,
-  version: number | undefined,
-): Promise<ToolOutput> {
-  const expected = version ?? note.version;
-  const result = await updateNote(note.id, content, expected, actor);
-  if (result.status === "not_found") {
-    return fail(`Note "${note.id}" is no longer visible to ${actor.email}.`);
-  }
-  if (result.status === "conflict") {
-    return conflictNote(result.note, expected);
-  }
-  return ok(
-    `Saved note "${noteTitle(result.note.content)}" (${note.id}) → v${result.note.version}.\n${metaLine(result.note)}`,
-  );
-}
-
 export function registerTools(server: McpServer, actor: Actor): void {
   // Reads and permissions key on the account; writes carry the full actor so a
-  // change made by an agent is attributed as one.
+  // change made by an agent is attributed as one. The carets are this session's
+  // and outlive no more than it does.
   const email = actor.email;
+  const carets = createCarets(actor);
+
+  // Where the agent is in a note it has opened: remembered position, or the
+  // address given in this call.
+  function caretOf(note: Note, address: CursorTarget | null): CaretOf {
+    if (address && hasAddress(address)) {
+      const match = resolveCaret(note.content, address);
+      return match.ok
+        ? { ok: true, caret: match.caret }
+        : { ok: false, reason: match.reason };
+    }
+    const remembered = carets.locate(note);
+    if (remembered === null) {
+      return {
+        ok: false,
+        reason: `You have no caret in note "${note.id}" yet. Read it first (read_note), or say where to work: ${ADDRESS_DESCRIPTION}`,
+      };
+    }
+    return { ok: true, caret: remembered };
+  }
+
+  // Applies a write the agent made, then shows the agent making it: people in
+  // the note see its caret land where the change ended, and the answer tells the
+  // agent where that was in the coordinates it can address again.
+  async function save(
+    note: Note,
+    content: string,
+    version: number | undefined,
+    edit: { caret: number; says: string; local?: boolean },
+  ): Promise<ToolOutput> {
+    if (content === note.content) {
+      // Nothing to record, so nothing is recorded: saving anyway would bump the
+      // version and tell everyone the note changed when it did not.
+      carets.show(note, edit.caret, "viewing");
+      return ok({
+        content: `${edit.says}: nothing to change, the note already says exactly that.`,
+        at: { caret: edit.caret, note },
+      });
+    }
+    const expected = version ?? note.version;
+    const result = await updateNote(note.id, content, expected, actor);
+    if (result.status === "not_found") {
+      return fail(`Note "${note.id}" is no longer visible to ${email}.`);
+    }
+    if (result.status === "conflict") {
+      return conflictNote(result.note, expected, edit.local);
+    }
+    const saved = result.note;
+    const caret = Math.min(edit.caret, saved.content.length);
+    carets.show(saved, caret, "editing");
+    return ok({
+      content: `Saved note "${noteTitle(saved.content)}" (${saved.id}) → v${saved.version}.\n${metaLine(saved)}`,
+      at: { caret, note: saved },
+    });
+  }
+
   server.registerTool(
     "whoami",
     {
@@ -91,9 +178,9 @@ export function registerTools(server: McpServer, actor: Actor): void {
     async (): Promise<ToolOutput> => {
       const notes = listNotes(email);
       const publicCount = notes.filter((n) => n.visibility === "public").length;
-      return ok(
-        `Acting as ${email}${actor.agent ? " (AI agent)" : ""}. Visible notes: ${notes.length} (${publicCount} public, ${notes.length - publicCount} private).`,
-      );
+      return ok({
+        content: `Acting as ${email}${actor.agent ? " (AI agent)" : ""}. Visible notes: ${notes.length} (${publicCount} public, ${notes.length - publicCount} private).`,
+      });
     },
   );
 
@@ -130,9 +217,10 @@ export function registerTools(server: McpServer, actor: Actor): void {
       );
       const page = all.slice(offset, offset + limit);
       if (all.length === 0) {
-        return ok(
-          "No notes are visible to you yet. Use create_note to add one.",
-        );
+        return ok({
+          content:
+            "No notes are visible to you yet. Use create_note to add one.",
+        });
       }
       if (page.length === 0) {
         return fail(
@@ -140,9 +228,9 @@ export function registerTools(server: McpServer, actor: Actor): void {
         );
       }
       const rangeEnd = offset + page.length;
-      return ok(
-        `${all.length} note(s) visible to ${email}, showing ${offset + 1}–${rangeEnd}, newest first:\n\n${listLines(page)}`,
-      );
+      return ok({
+        content: `${all.length} note(s) visible to ${email}, showing ${offset + 1}–${rangeEnd}, newest first:\n\n${listLines(page)}`,
+      });
     },
   );
 
@@ -151,14 +239,38 @@ export function registerTools(server: McpServer, actor: Actor): void {
     {
       title: "Read note",
       description:
-        "Read one note in full: its markdown content plus id, visibility, version and timestamps. Pass the version back when you edit it.",
-      inputSchema: { id: z.string().min(1).describe(ID_DESCRIPTION) },
+        "Read a note as numbered lines, with its id, visibility and version. The numbers are addresses, not part of the text: quote the text after them when you find-and-replace, or pass a line number to work at one. Long notes come in pages: ask for the next one with `from`. Reading is how you get your caret into a note — it stops where the text shown ends, and people watching the note see it, so your place is known before you type. Returns the content plus the version writes need.",
+      inputSchema: {
+        id: z.string().min(1).describe(ID_DESCRIPTION),
+        from: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("First line of the window to read, 1-based (default 1)."),
+        lines: z
+          .number()
+          .int()
+          .min(1)
+          .max(400)
+          .optional()
+          .describe("How many lines to return (default: up to 80)."),
+      },
       annotations: { readOnlyHint: true },
     },
-    async ({ id }): Promise<ToolOutput> => {
+    async ({ id, from, lines }): Promise<ToolOutput> => {
       const note = getNote(id, email);
       if (!note) return notVisible(id, email);
-      return ok(fullNote(note));
+      const caret = carets.locate(note);
+      const shown = readNote(note, {
+        from,
+        lines,
+        caret: from === undefined && lines === undefined ? caret : null,
+      });
+      // An agent reading along is present in the note: people watching see the
+      // caret land where its reading stopped, under a "viewing" chip.
+      carets.show(note, shown.caret, "viewing");
+      return ok({ content: shown.text });
     },
   );
 
@@ -167,7 +279,7 @@ export function registerTools(server: McpServer, actor: Actor): void {
     {
       title: "Search notes",
       description:
-        "Search inside the notes you can see and return matching lines with line numbers. Plain substring search by default; set regex for a regular expression.",
+        "Search inside the notes you can see and return matching lines with line numbers. Plain substring search by default; set regex for a regular expression. The line numbers are the ones read_note prints and edits take.",
       inputSchema: {
         query: z
           .string()
@@ -233,15 +345,17 @@ export function registerTools(server: McpServer, actor: Actor): void {
         );
       }
       if (matchedNotes === 0) {
-        return ok(`No notes match ${regex ? "pattern" : `"${query}"`}.`);
+        return ok({
+          content: `No notes match ${regex ? "pattern" : `"${query}"`}.`,
+        });
       }
       const more =
         matchedNotes > limit
           ? `\n(+${matchedNotes - limit} more matching notes)`
           : "";
-      return ok(
-        `${matchedNotes} note(s) match ${regex ? `pattern ${query}` : `"${query}"`}${more}\n\n${results.join("\n\n")}`,
-      );
+      return ok({
+        content: `${matchedNotes} note(s) match ${regex ? `pattern ${query}` : `"${query}"`}${more}\n\n${results.join("\n\n")}`,
+      });
     },
   );
 
@@ -274,10 +388,149 @@ export function registerTools(server: McpServer, actor: Actor): void {
       if (title && !/^\s{0,3}#\s/.test(body)) {
         body = body.length > 0 ? `# ${title}\n\n${body}` : `# ${title}\n`;
       }
-      const finalNote = await createNote(body, actor, visibility);
-      return ok(
-        `Created note "${noteTitle(finalNote.content)}" (${finalNote.id}).\n${metaLine(finalNote)}`,
+      const created = await createNote(body, actor, visibility);
+      return ok({
+        content: `Created note "${noteTitle(created.content)}" (${created.id}).\n${metaLine(created)}`,
+      });
+    },
+  );
+
+  server.registerTool(
+    "type_in_note",
+    {
+      title: "Type at the caret",
+      description:
+        "Type into a note the way a person types, at the caret people watching can see move. `text` is typed keystroke by keystroke — a newline is the Enter key, so it starts a new list item inside a list and a new paragraph elsewhere, and a backspace deletes: it is content, not a patch, and cannot rewrite the lines around it. Use `word` for a single word (spaced and allowed to overwrite the one under the caret), `paste` for text that must stay as written (markdown links in it are written out rather than clicked), `link` to add a link. A markdown link inside text you were handed is written out as its words and its address instead of becoming clickable, so it cannot lie about where it goes. Say `after`, `before`, `line` or `offset` to work somewhere specific; otherwise you type where your last read or edit left you.",
+      inputSchema: {
+        id: z.string().min(1).describe(ID_DESCRIPTION),
+        text: z
+          .string()
+          .optional()
+          .describe(
+            "Text to type, keystroke by keystroke: a newline acts as Enter, a backspace as Backspace.",
+          ),
+        word: z
+          .string()
+          .optional()
+          .describe("A single word to type, spaced from what precedes it."),
+        paste: z
+          .string()
+          .optional()
+          .describe(
+            "Text to insert exactly as given, with markdown syntax neutralised so it cannot become a link.",
+          ),
+        link: z.string().optional().describe("URL to insert as a link."),
+        linkText: z
+          .string()
+          .optional()
+          .describe("Label for the link (defaults to the address)."),
+        after: z
+          .string()
+          .optional()
+          .describe("Type just after this text from the note."),
+        before: z
+          .string()
+          .optional()
+          .describe("Type just before this text from the note."),
+        line: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Line to type on, as read_note numbers them."),
+        column: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Column within that line, 1-based (default: its end)."),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Character offset to type at, from the start of the note."),
+        enterFirst: z
+          .boolean()
+          .optional()
+          .describe("Press Enter before typing (default false)."),
+        enterAfter: z
+          .boolean()
+          .optional()
+          .describe("Press Enter after typing (default false)."),
+        overwrite: z
+          .enum(["word", "line"])
+          .optional()
+          .describe(
+            "Delete first: the word before the caret, or the whole line it is on.",
+          ),
+        version: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(VERSION_DESCRIPTION),
+      },
+      annotations: { destructiveHint: false },
+    },
+    async ({
+      id,
+      text,
+      word,
+      paste,
+      link,
+      linkText,
+      after,
+      before,
+      line,
+      column,
+      offset,
+      enterFirst = false,
+      enterAfter = false,
+      overwrite,
+      version,
+    }): Promise<ToolOutput> => {
+      const note = getNote(id, email);
+      if (!note) return notVisible(id, email);
+      if (link !== undefined && !isLinkUrl(link)) {
+        return fail(
+          `"${link}" is not a http(s) or mailto address, so it will not be turned into a link.`,
+        );
+      }
+      if (
+        text === undefined &&
+        word === undefined &&
+        paste === undefined &&
+        link === undefined &&
+        !enterFirst &&
+        !enterAfter
+      ) {
+        return fail(
+          "Nothing to type: send text, word, paste, link, or ask for Enter.",
+        );
+      }
+
+      const at = caretOf(
+        note,
+        addressOf({ after, before, line, column, offset }),
       );
+      if (!at.ok) return fail(at.reason);
+
+      const typed = typeAtCaret(note, at.caret, {
+        text,
+        word,
+        paste,
+        link,
+        linkText,
+        enterFirst,
+        enterAfter,
+        overwrite,
+      });
+      return save(note, typed.content, version, {
+        caret: typed.caret,
+        says: `Typed ${describeTyped(typed.typed)}`,
+        local: true,
+      });
     },
   );
 
@@ -286,7 +539,7 @@ export function registerTools(server: McpServer, actor: Actor): void {
     {
       title: "Replace note content",
       description:
-        "Replace the entire content of a note with new markdown. Read the note first: content you send overwrites everything, and a stale version makes the write fail instead of clobbering someone else.",
+        "Replace the entire content of a note with new markdown. Read the note first: content you send overwrites everything, and a stale version makes the write fail instead of clobbering someone else. For a change to one part of a shared note, prefer type_in_note or replace_in_note: they say what you changed rather than restating everything.",
       inputSchema: {
         id: z.string().min(1).describe(ID_DESCRIPTION),
         content: z
@@ -304,7 +557,12 @@ export function registerTools(server: McpServer, actor: Actor): void {
     async ({ id, content, version }): Promise<ToolOutput> => {
       const note = getNote(id, email);
       if (!note) return notVisible(id, email);
-      return writeContent(note, actor, content, version);
+      // The caret goes to the end of what was written: a whole-document save has
+      // no interesting position of its own.
+      return save(note, content, version, {
+        caret: content.length,
+        says: `Replaced note "${noteTitle(content)}"`,
+      });
     },
   );
 
@@ -338,7 +596,11 @@ export function registerTools(server: McpServer, actor: Actor): void {
       const addition = heading ? `## ${content.trim()}\n` : content;
       const base = note.content.replace(/\s+$/, "");
       const merged = base.length > 0 ? `${base}\n\n${addition}` : addition;
-      return writeContent(note, actor, merged, version);
+      return save(note, merged, version, {
+        caret: merged.length,
+        says: `Appended to note "${noteTitle(merged)}"`,
+        local: true,
+      });
     },
   );
 
@@ -413,7 +675,29 @@ export function registerTools(server: McpServer, actor: Actor): void {
       // `replace` with the global flag rewrites every match; when a single
       // match was required there is exactly one to rewrite.
       const updated = note.content.replace(pattern, replacement);
-      return writeContent(note, actor, updated, version);
+      // Where the change ends, so the caret lands on it: the end of the last
+      // thing replaced. Offsets shift as earlier replacements change the length,
+      // and a capture-group replacement is longer or shorter than the words it
+      // sends, so the total length change carries that — and the result is
+      // clamped to the note.
+      const last = matches[matches.length - 1]!;
+      const shifted =
+        (last.index ?? 0) +
+        updated.length -
+        note.content.length -
+        matches.slice(0, -1).reduce((total, one) => total - one[0].length, 0);
+      const caret =
+        matches.length === 1
+          ? (last.index ?? 0) + replacement.length
+          : Math.max(
+              shifted,
+              updated.length - last[0].length + replacement.length,
+            );
+      return save(note, updated, version, {
+        caret: Math.max(0, Math.min(caret, updated.length)),
+        says: `Replaced ${matches.length > 1 ? `${matches.length}× ` : `"${last[0]}"`} in note "${noteTitle(updated)}"`,
+        local: true,
+      });
     },
   );
 
@@ -442,9 +726,9 @@ export function registerTools(server: McpServer, actor: Actor): void {
           `Note "${id}" is owned by someone else, so its visibility cannot be changed (owner: ${note.owner || "unowned"}).`,
         );
       }
-      return ok(
-        `Note "${noteTitle(updated.content)}" is now ${updated.visibility}.\n${metaLine(updated)}`,
-      );
+      return ok({
+        content: `Note "${noteTitle(updated.content)}" is now ${updated.visibility}.\n${metaLine(updated)}`,
+      });
     },
   );
 
@@ -468,7 +752,114 @@ export function registerTools(server: McpServer, actor: Actor): void {
           `Note "${id}" is owned by ${note.owner || "someone else"} and cannot be deleted by ${email}.`,
         );
       }
-      return ok(`Deleted note "${noteTitle(note.content)}" (${id}).`);
+      carets.forget(id);
+      return ok({
+        content: `Deleted note "${noteTitle(note.content)}" (${id}).`,
+      });
     },
   );
+}
+
+// ---- type_in_note plumbing ------------------------------------------
+
+type CaretOf = { ok: true; caret: number } | { ok: false; reason: string };
+
+function hasAddress(address: CursorTarget): boolean {
+  return (
+    address.text !== undefined ||
+    address.line !== undefined ||
+    address.column !== undefined ||
+    address.offset !== undefined
+  );
+}
+
+function addressOf(fields: {
+  after?: string;
+  before?: string;
+  line?: number;
+  column?: number;
+  offset?: number;
+}): CursorTarget | null {
+  if (fields.after !== undefined) return { text: fields.after, side: "after" };
+  if (fields.before !== undefined)
+    return { text: fields.before, side: "before" };
+  if (fields.line !== undefined || fields.column !== undefined)
+    return { line: fields.line ?? 1, column: fields.column };
+  if (fields.offset !== undefined) return { offset: fields.offset };
+  return null;
+}
+
+interface TypingInput {
+  text?: string;
+  word?: string;
+  paste?: string;
+  link?: string;
+  linkText?: string;
+  enterFirst: boolean;
+  enterAfter: boolean;
+  overwrite?: "word" | "line";
+}
+
+// A newline an agent sends is the Enter key, and what Enter *means* is the
+// editor's rule, not the agent's: a new list item inside a list, a new paragraph
+// elsewhere. The agent types words; the note keeps its shape.
+//
+// Types the payload of a type_in_note call, one gesture at a time, from where
+// the agent's caret is.
+function typeAtCaret(
+  note: Note,
+  caret: number,
+  input: TypingInput,
+): { content: string; caret: number; typed: string } {
+  const chunks: { body: string; options: TypingOptions }[] = [];
+  if (input.enterFirst) chunks.push({ body: "\n", options: {} });
+  if (input.paste !== undefined) {
+    chunks.push({
+      // Text the agent was handed is not formatting, and must not render as a
+      // link whose label was written by whoever wrote the text.
+      body: defuseLinks(input.paste),
+      options: {},
+    });
+  }
+  if (input.text !== undefined) {
+    chunks.push({
+      body: input.text,
+      options: {},
+    });
+  }
+  if (input.word !== undefined) {
+    // A word is spaced from the word it follows, the way typing one is.
+    chunks.push({
+      body: defuseLinks(input.word),
+      options: { word: true },
+    });
+  }
+  if (input.link !== undefined) {
+    chunks.push({
+      body: linkMarkdown(input.link, input.linkText),
+      options: {},
+    });
+  }
+  if (input.enterAfter) chunks.push({ body: "\n", options: {} });
+
+  // Only the first gesture may clear what was there: a word typed after a paste
+  // adds to it, it does not eat it.
+  if (chunks.length > 0) chunks[0]!.options.overwrite ??= input.overwrite;
+
+  let content = note.content;
+  let at = caret;
+  let typed = "";
+  for (const chunk of chunks) {
+    const result = typeText(content, at, chunk.body, chunk.options);
+    content = result.content;
+    at = result.caret;
+    typed += result.typed;
+  }
+  return { content, caret: at, typed };
+}
+
+function describeTyped(typed: string): string {
+  const clean = typed.replace(/\s+/g, " ").trim();
+  if (clean.length === 0) return "a line break";
+  return clean.length > 40 ? `"${clean.slice(0, 39)}…"` : `"${clean}"`;
 }
