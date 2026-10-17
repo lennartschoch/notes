@@ -59,6 +59,21 @@ pi, …) take the URL directly plus whatever header their auth needs:
 }
 ```
 
+With an API key instead of Cloudflare — minted in the web app under **Agents**,
+see the next section — the header is this app's own:
+
+```json
+{
+  "mcpServers": {
+    "notes": {
+      "type": "http",
+      "url": "https://notes.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${NOTES_API_KEY}" }
+    }
+  }
+}
+```
+
 ## Authentication
 
 The MCP endpoint uses the app's identity, so an agent can only ever see and
@@ -69,12 +84,38 @@ must resolve to one.
   Access JWT, either in the `cf-access-jwt-assertion` header Access sets, or in
   `Authorization: Bearer <jwt>` for clients that cannot set that header. The
   token's `email` claim becomes the acting user.
-- **Agents: a Cloudflare Access service token.** This is the one supported
-  machine credential, and it is Cloudflare's, not ours. In the Zero Trust
-  dashboard, create a service token and add it to the Access policy for the
-  notes hostname with the **Service Auth** rule — without that rule Access
-  answers the agent with a login page instead of forwarding the request. Then
-  send both headers to `https://<your-notes-host>/mcp`:
+- **Agents: this app's own API key.** Nothing outside the app has to be in the
+  loop. In the web app, open **Agents** (the key button in the sidebar) and mint a
+  key per machine, with a name of your own choosing. Send it as:
+
+  ```
+  Authorization: Bearer notes_<the key, shown once>
+  ```
+
+  A key acts as the **whole account** — every note you can see, including making
+  them public and deleting them — which is what the Access credential it replaces
+  does too. Everything the app keeps about a key is a hash of it (`keys.json`,
+  beside `notes.json`; `API_KEYS_DATA_FILE` moves it), so a copied data file hands
+  over no working credentials. The plaintext is shown once, at creation; the list
+  keeps a name and the last few characters so you can tell them apart.
+
+  Revoking is immediate: the key stops working on the next request, and any agent
+  already connected with it is hung up on. A key cannot mint, list or rename keys —
+  a credential that could hand out credentials would outlive its own revocation —
+  and it cannot manage another one, either: `GET/POST/DELETE /api/keys` answers
+  `403` when the caller arrived with a key. Up to
+  `MAX_KEYS_PER_ACCOUNT = 20` per account.
+
+  Other people are told that _an agent_ is at work in a note, and never which key:
+  a name you chose for your own list is never sent to anyone else.
+
+- **Agents: a Cloudflare Access service token.** An alternative to the key above,
+  for a deployment that already has Access and would rather Cloudflare hold the
+  secret: this app stores no secret of its own, and rotates nothing. In the Zero
+  Trust dashboard, create a service token and add it to the Access policy for the
+  notes hostname with the **Service Auth** rule — without that rule Access answers
+  the agent with a login page instead of forwarding the request. Then an agent
+  sends both headers to `https://<your-notes-host>/mcp`:
 
   ```
   CF-Access-Client-Id: <client id>
@@ -109,6 +150,21 @@ must resolve to one.
   "not production" so a deployment that forgets its environment fails closed:
   without it, an identity header is ignored and every anonymous request gets a
   `401`.
+
+### Without Cloudflare Access
+
+Access is the easy way in — nobody has a password to steal, and this app keeps no
+secret — but it is not required. A deployment on a LAN, or on any host without a
+Zero Trust policy in front of it, runs on this app's own credentials: an API key
+per agent, as above. What Access still has to do is protect _people_: with the
+endpoint reachable from the internet, an unprotected `/api` is an unprotected
+account, so a person signing in over Access plus agents on API keys is the shape
+most deployments want.
+
+Either way the rule is the same, because it is the same code: credentials are
+verified by signature or by hash, never by which network the request came from. An
+`cf-access-jwt-assertion` header that reaches the origin without Cloudflare's
+signature behind it is not an identity, it is a 401.
 
 ## Tools
 
@@ -260,6 +316,8 @@ sweep.
 ## Layout
 
 ```
+server/src/auth.ts          the credential chain: Access JWT, API key, dev identity
+server/src/keys.ts          API keys: minted by a person, kept as a hash
 server/src/mcp/http.ts        routes, session handshake, session lifecycle
 server/src/mcp/auth.ts        identity: Access JWT, bearer token, service-token mapping
 server/src/mcp/server.ts      one McpServer per session + client instructions

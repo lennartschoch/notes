@@ -22,9 +22,9 @@ export interface LiveEditor {
   email: string;
   // True when an AI agent is driving this identity rather than the person
   // themselves (see MCP.md). Absent/false for a real user. A boolean rather
-  // than a name on purpose: the account model allows at most one agent per
-  // account, and a name the agent chose for itself would be an impersonation
-  // vector. The UI renders the label ("<email>'s agent"), never the agent.
+  // than a name on purpose: an account may hold many agent keys, they are one
+  // peer to the room, and which key it was is its owner's own business. The UI
+  // renders the label ("<email>'s agent"), never the agent.
   agent?: boolean;
   state: PresenceState;
 }

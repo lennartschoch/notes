@@ -2,10 +2,12 @@ export type Visibility = "private" | "public";
 
 // Who made a change: the account it acted as, and whether an AI agent (rather
 // than the person) was driving. `agent` is a boolean for the same reason the
-// live protocol keeps it one — the account model allows a single agent per
-// account, and a name chosen by the agent would be spoofable. Everything that
-// must tell a person apart from their own agent (push text, presence, carets)
-// keys on this, not on the bare email.
+// live protocol keeps it one: an account may hold any number of API keys, and
+// to everybody else they are all one thing — that account's agent. Which key
+// it was is known only to the owner's own key list, because a name carried to
+// other people is a name they did not choose to be told. Everything that must
+// tell a person apart from their own agent (push text, presence, carets) keys
+// on this, not on the bare email.
 export interface Actor {
   email: string;
   agent?: boolean;
