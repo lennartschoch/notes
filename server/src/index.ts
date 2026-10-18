@@ -9,8 +9,22 @@ import express, {
 } from "express";
 import { z } from "zod";
 import { requireUser } from "./auth.js";
-import { configureApiKeyStore } from "./credentials.js";
+import { parseBody } from "./body.js";
+import {
+  accessAssertionsVerified,
+  configureApiKeyStore,
+  configureSessionStore,
+} from "./credentials.js";
 import { corsOptions, allowedOrigins, trustProxySetting } from "./network.js";
+import { mountSignIn, requireHuman } from "./signIn.js";
+import { hasAccounts, initAccounts, watchAccounts } from "./accounts.js";
+import {
+  initSessions,
+  sessionForToken,
+  sweepSessions,
+  watchSessions,
+} from "./sessions.js";
+import { sweep as sweepGuard } from "./guard.js";
 import {
   createNote,
   deleteNote,
@@ -65,30 +79,21 @@ const pushRemovalBody = z.object({ endpoint: z.string().min(1) });
 // credential, not the label.
 const createKeyBody = z.object({ name: z.string().catch("") });
 
-function parseBody<S extends z.ZodType>(
-  schema: S,
-  req: Request,
-  res: Response,
-): z.infer<S> | undefined {
-  const parsed = schema.safeParse(req.body ?? {});
-  if (parsed.success) return parsed.data;
-  const detail = parsed.error.issues
-    .map((issue) =>
-      issue.path.length > 0
-        ? `${issue.path.join(".")}: ${issue.message}`
-        : issue.message,
-    )
-    .join("; ");
-  res.status(400).json({ error: detail });
-  return undefined;
-}
-
 const app = express();
 // How many hops of X-Forwarded-* to believe, and which browsers may call this
 // origin from somewhere else. Both are the operator's to say; both assume the
 // safest thing when they do not (see network.ts).
 app.set("trust proxy", trustProxySetting());
 app.use(cors(corsOptions()));
+// This app is not something another site may put in a frame. With a sign-in form
+// in it, that stopped being cosmetic: an overlay on a page nobody looked at closely
+// is how a password gets typed into somebody else's account.
+app.use((_req, res, next) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
+  next();
+});
+
 // MCP endpoint for AI agents (see MCP.md). Mounted before the body parsers so
 // the streamable-HTTP transport reads its own JSON-RPC bodies.
 mountMcp(app);
@@ -99,7 +104,14 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.get("/api/me", requireUser, (req, res) => {
-  res.json({ email: req.user!.email });
+  res.json({
+    email: req.user!.email,
+    // How the caller got in. The web client cannot see an Access token or a key
+    // from script code, so this is the only place it can learn that it is looking
+    // at a credential that has no password behind it — which is the difference
+    // between offering "change your password" and explaining why it cannot.
+    via: req.user!.via,
+  });
 });
 
 app.get("/api/notes", requireUser, (req, res) => {
@@ -168,21 +180,6 @@ app.delete("/api/notes/:id", requireUser, async (req, res) => {
   }
   res.status(204).end();
 });
-
-// Minting, listing and revoking keys is something a person does, never something
-// a key does. A credential that could hand out credentials would outlive its own
-// revocation, and a key's name belongs to its owner — it is not the agent's to
-// read back. This is the one place `via` decides anything.
-function requireHuman(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.via === "apikey") {
-    res.status(403).json({
-      error:
-        "An API key cannot manage API keys. Do it as the person who owns them.",
-    });
-    return;
-  }
-  next();
-}
 
 // Browser push: the client subscribes through its service worker and registers
 // the resulting subscription here, keyed to the signed-in user so notifications
@@ -253,6 +250,10 @@ app.delete("/api/keys/:id", requireUser, requireHuman, async (req, res) => {
   res.status(204).end();
 });
 
+// Sign-in, sign-out, and the sessions a password leaves behind. Mounted with the
+// rest of the API routes, before the catch-all below.
+mountSignIn(app);
+
 // Registered after every API route, so an unknown one cannot be mistaken for the
 // SPA's own path and answered with index.html.
 app.use("/api", (_req, res) => {
@@ -278,11 +279,48 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 // ones exist is handed to it here, at the app's entrance, so deciding who a
 // caller is never has to know where the hashes are kept.
 configureApiKeyStore({ lookup: keyForSecret, used: touchKey });
+configureSessionStore({
+  lookup: async (token) => {
+    const session = await sessionForToken(token);
+    return session && { id: session.id, email: session.email };
+  },
+});
 
 await init();
 await initKeys();
+await initAccounts();
+await initSessions();
 await initPush();
+// An app that answers for its own accounts has to keep checking the ones
+// Cloudflare signed. Skipping verification is a claim that whoever sent the header
+// is Cloudflare, so with local passwords in the file it is a second door, not a
+// shortcut - and it is the kind of setting left over from yesterday.
+if (hasAccounts() && !accessAssertionsVerified()) {
+  console.warn(
+    "Warning: ACCESS_NOT_VERIFIED is set and local accounts exist, so any client that reaches this" +
+      " origin may claim any account by asking for it. Never run this way in production.",
+  );
+}
 initNotifier();
+// The accounts command line is a second pair of hands on these two files.
+watchAccounts();
+watchSessions();
+
+// A session that has expired is dead weight in a file, and a trail of failed
+// sign-ins is dead weight in memory: both are swept, on a timer that does not keep
+// the process alive for its own sake.
+const expired = setInterval(
+  () => {
+    void sweepSessions().then((gone) => {
+      if (gone > 0) {
+        console.log(`Ended ${gone} expired sign-in${gone === 1 ? "" : "s"}`);
+      }
+    });
+    sweepGuard();
+  },
+  10 * 60 * 1000,
+);
+expired.unref();
 const httpServer = app.listen(PORT, () => {
   console.log(`Notes API listening on http://localhost:${PORT}`);
   // The two things about the network this app cannot know for itself, printed so

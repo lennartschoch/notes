@@ -8,7 +8,8 @@
     "start:e2e": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "accounts": "tsx src/cli/accounts.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.0",

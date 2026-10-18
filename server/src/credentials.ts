@@ -1,3 +1,4 @@
+import type { Response } from "express";
 import type { Actor } from "./types.js";
 
 // Reading credentials off a request.
@@ -10,7 +11,7 @@ import type { Actor } from "./types.js";
 // Which kind of credential granted an identity. Named after the credential,
 // never after anything the caller says about itself, so a machine cannot
 // describe its way into appearing to be a person.
-export type CredentialKind = "access" | "apikey" | "dev";
+export type CredentialKind = "access" | "apikey" | "session" | "dev";
 
 // An identity, ready to be used as an Actor. `via` records where the grant came
 // from, for this app's own bookkeeping; whether an agent was driving the account
@@ -22,6 +23,9 @@ export interface Identity extends Actor {
   // it, and a key may not mint, list or name the others — a credential that could
   // hand out credentials would outlive its own revocation.
   keyId?: string;
+  // Which of the account's own sign-ins this request came from, when it came from
+  // one: it is what signing out, or changing a password, takes aim at.
+  sessionId?: string;
 }
 
 // Why a request was turned away. The difference matters to the caller: a token
@@ -31,6 +35,7 @@ export type AuthFailure =
   | "no_credential"
   | "invalid_token"
   | "invalid_key"
+  | "invalid_session"
   | "no_account";
 
 // Everything a provider may read a credential off: the headers of an HTTP
@@ -146,4 +151,134 @@ export function apiKeyProvider(): Provider {
       };
     },
   };
+}
+
+// ------------------------------------------------------------------ cookie
+
+// The two spellings of the session cookie. `__Host-` is the strong one: the
+// browser will only send it back to this exact host, set by a page on it, with no
+// `Domain` and no path games — which is worth having, but requires `Secure`, and a
+// LAN deployment on plain http has no `Secure` to give it. So the app uses the
+// strong name when the connection is HTTPS and the plain one otherwise, and reads
+// either.
+export const HOST_COOKIE = "__Host-notes_session";
+export const PLAIN_COOKIE = "notes_session";
+
+function cookieNames(secure: boolean): string[] {
+  return secure ? [HOST_COOKIE, PLAIN_COOKIE] : [PLAIN_COOKIE, HOST_COOKIE];
+}
+
+// The value of the first of `names` the request's Cookie header carries.
+export function cookieValue(
+  header: string | undefined,
+  names: string[],
+): string {
+  if (!header) return "";
+  for (const part of header.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    const name = part.slice(0, separator).trim();
+    if (names.includes(name)) return part.slice(separator + 1).trim();
+  }
+  return "";
+}
+
+export function sessionCookieValue(headers: Credentials["headers"]): string {
+  const raw = headers.cookie;
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  return cookieValue(
+    typeof header === "string" ? header : "",
+    cookieNames(false),
+  );
+}
+
+// `Max-Age` is spelled out as well as `Expires`: an old browser is rare, but a
+// cookie that outlives its session because a header was missed is not.
+function setCookie(
+  res: Response,
+  name: string,
+  value: string,
+  options: { secure: boolean; maxAgeSeconds: number },
+): void {
+  const parts = [
+    `${name}=${value}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.floor(options.maxAgeSeconds)}`,
+    `Expires=${new Date(Date.now() + options.maxAgeSeconds * 1000).toUTCString()}`,
+  ];
+  if (options.secure) parts.push("Secure");
+  res.append("Set-Cookie", parts.join("; "));
+}
+
+// Setting a session cookie. `secure` is the caller's answer to "did this request
+// arrive over HTTPS", which — over a proxy — is only knowable if the operator said
+// the proxy may be believed (see network.ts).
+export function setSessionCookie(
+  res: Response,
+  token: string,
+  secure: boolean,
+  maxAgeSeconds: number,
+): void {
+  setCookie(res, secure ? HOST_COOKIE : PLAIN_COOKIE, token, {
+    secure,
+    maxAgeSeconds,
+  });
+}
+
+export function clearSessionCookie(res: Response, secure: boolean): void {
+  for (const name of cookieNames(secure))
+    setCookie(res, name, "", { secure, maxAgeSeconds: 0 });
+}
+
+// -------------------------------------------------------- session credentials
+
+export interface SessionGrant {
+  id: string;
+  email: string;
+}
+
+export interface SessionStore {
+  lookup: (token: string) => Promise<SessionGrant | undefined>;
+}
+
+let sessionStore: SessionStore | undefined;
+
+// Given its store by the app's entrance, exactly like the key provider: the chain
+// decides who a caller is and never touches a file. `undefined` means a deployment
+// with no local sign-ins at all.
+export function configureSessionStore(store: SessionStore | undefined): void {
+  sessionStore = store;
+}
+
+// A signed-in browser. It is a person's own credential, so it never arrives as an
+// agent — and unlike an Access token, it is one the app can take back.
+export function sessionProvider(): Provider {
+  return {
+    kind: "session",
+    async match({ headers }) {
+      const token = sessionCookieValue(headers);
+      if (token.length === 0) return PASS;
+      if (!sessionStore) return { kind: "deny", reason: "invalid_session" };
+      const session = await sessionStore.lookup(token);
+      if (!session) return { kind: "deny", reason: "invalid_session" };
+      return {
+        kind: "identity",
+        identity: {
+          email: session.email,
+          via: "session",
+          sessionId: session.id,
+        },
+      };
+    },
+  };
+}
+
+// Whether an Access assertion is checked at all. A development switch only, and an
+// alarming one to leave set: skipping verification is a claim that whatever sent
+// the header *is* Cloudflare, which nothing but the network can support. It is read
+// per request so a mistake cannot be made once at boot and inherited forever.
+export function accessAssertionsVerified(): boolean {
+  return process.env.ACCESS_NOT_VERIFIED !== "1";
 }

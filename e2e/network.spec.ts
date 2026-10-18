@@ -35,6 +35,19 @@ test("a page from another origin is answered with no permission at all", async (
   expect(mcp.headers()).not.toHaveProperty("access-control-allow-origin");
 });
 
+test("nobody may put the app in a frame", async ({ request }) => {
+  // There is a sign-in form now, which makes this a real protection rather than a
+  // header people add because a scan asked for one.
+  const page = await request.get("/");
+  const api = await request.get("/api/health");
+  for (const response of [page, api]) {
+    expect(response.headers()).toMatchObject({
+      "x-frame-options": "DENY",
+      "content-security-policy": "frame-ancestors 'none'",
+    });
+  }
+});
+
 test("the app's own origin is served as it always was", async ({ request }) => {
   // Same-origin requests carry no `Origin` for GETs and are not what CORS governs;
   // this is the ordinary path every other spec rides on.

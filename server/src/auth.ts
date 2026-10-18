@@ -3,6 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import {
   apiKeyProvider,
   bearerToken,
+  sessionProvider,
   headerValue,
   looksLikeApiKey,
   PASS,
@@ -19,6 +20,8 @@ import {
 export type {
   ApiKeyGrant,
   ApiKeyStore,
+  SessionGrant,
+  SessionStore,
   AuthFailure,
   CredentialKind,
   Credentials,
@@ -66,6 +69,9 @@ const FAILURE_BODY: Record<AuthFailure, { error: string }> = {
   invalid_token: { error: "Invalid Cloudflare Access token" },
   invalid_key: {
     error: "Invalid API key. Check the key, or mint a new one under Agents.",
+  },
+  invalid_session: {
+    error: "This sign-in is no longer valid. Sign in again.",
   },
   no_account: {
     error:
@@ -189,16 +195,22 @@ function lowerEmail(value: string): string {
 }
 
 // The one chain, in precedence order: this app's own API key, a person's Access
-// token, the machine credential the operator pinned, then the dev identity. A key
-// and an Access token are never confused for one another — one is prefixed, the
-// other is not — and `machine` is the only thing a surface adds, so no endpoint
-// gets to decide on its own who is trusted, or when.
+// token, the machine credential the operator pinned, a session cookie this app
+// signed, then the dev identity. No two of them can be mistaken for each other —
+// a key is prefixed, an Access token is a signed JWT, a session arrives in a
+// cookie — and `machine` is the only thing a surface adds, so no endpoint gets to
+// decide on its own who is trusted, or when.
+//
+// A signed-in browser that also arrives through Access is served by Access: the
+// cookie is the credential for deployments that have nothing else, not a way to
+// step in front of the one that does.
 export function providers(
   machine?: (payload: JWTPayload) => string,
 ): Provider[] {
   return [
     apiKeyProvider(),
     accessProvider({ verify: verifyAccessToken, machine }),
+    sessionProvider(),
     devProvider(),
   ];
 }
