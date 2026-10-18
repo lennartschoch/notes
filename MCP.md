@@ -156,10 +156,10 @@ must resolve to one.
 Access is the easy way in — nobody has a password to steal, and this app keeps no
 secret — but it is not required. A deployment on a LAN, or on any host without a
 Zero Trust policy in front of it, runs on this app's own credentials: an API key
-per agent, as above. What Access still has to do is protect _people_: with the
-endpoint reachable from the internet, an unprotected `/api` is an unprotected
-account, so a person signing in over Access plus agents on API keys is the shape
-most deployments want.
+per agent, as above, and a password per person (see the next section). What Access
+still has to do is protect _people_: with the endpoint reachable from the internet,
+an unprotected `/api` is an unprotected account, so a person signing in over Access
+plus agents on API keys is the shape most deployments want.
 
 Either way the rule is the same, because it is the same code: credentials are
 verified by signature or by hash, never by which network the request came from. An
@@ -186,6 +186,45 @@ safest thing when they are left alone:
 
 The boot line prints both, so a deployment that has one wrong hears it once, out
 loud, rather than finding out through a browser.
+
+## Passwords, for people
+
+An account here **is** an email address — the same address a note is owned by — so
+an agent and a person reach the same notes however they arrived. Accounts are made on
+the command line, because a self-hosted notes app has no mail server to check an
+address with, and a signup form on a private installation is a worse version of the
+policy Access already gave it:
+
+```
+npm run accounts -w server -- add alice@example.com
+npm run accounts -w server -- list
+```
+
+That prints a one-time password; change it under the account menu. Inside a
+container: `docker compose exec notes node server/dist/cli/accounts.js add …`. A
+running app notices the file within a couple of seconds, so there is nothing to
+restart — and `passwd`/`remove` end the account's sign-ins along with it.
+
+Then the app itself asks for that password, and remembers the browser with a
+session cookie:
+
+- **Opaque, not a JWT.** The cookie holds a random token and the server keeps the
+  list, which is what makes signing out, revoking a device, changing a password and
+  closing a browser tab all mean the same word: ended. A self-contained token could
+  only be waited out, and would need signing keys of this app's own to mint.
+- **`__Host-notes_session` over HTTPS**, and the plain `notes_session` over http,
+  because the strong name requires `Secure` and a LAN deployment has no HTTPS to
+  have. Either way: `HttpOnly`, `SameSite=Lax`, `Path=/`, no `Domain`.
+- **Sliding, for 30 days of last use** (`SESSION_HOURS`), and a sign-in from the same
+  browser replaces the one it already had rather than adding a second.
+- **Only the hashes of both are stored** — `accounts.json` and `sessions.json`
+  beside `notes.json` — so a copied data directory yields no working credential.
+- Sessions are listed under **Account**, per device, each with a sign-out; that is
+  also where a password is changed, which signs every device out.
+
+The app never answers "no account by that address" and "wrong password"
+differently, and it starts waiting after five failures from one address on one
+account.
 
 ## Tools
 
@@ -321,17 +360,21 @@ when a note goes stale.
 
 ## Settings
 
-| Variable               | Default   | Purpose                                              |
-| ---------------------- | --------- | ---------------------------------------------------- |
-| `MCP_PATH`             | `/mcp`    | Path the endpoint is mounted on                      |
-| `MCP_MAX_SESSIONS`     | `25`      | Concurrent sessions before `initialize` gets a `503` |
-| `MCP_IDLE_TIMEOUT_MS`  | `1800000` | Close sessions that have been quiet for this long    |
-| `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                        |
-| `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                 |
-| `MCP_SERVICE_TOKEN_ID` | unset     | Service token Client ID the mapping accepts          |
-| `API_KEYS_DATA_FILE`   | unset     | Where API keys live — hashes only                    |
-| `CORS_ALLOW_ORIGINS`   | unset     | Other browser origins allowed to call the API        |
-| `TRUST_PROXY`          | unset     | Hops of X-Forwarded-* to believe, e.g. 1             |
+| Variable               | Default   | Purpose                                                 |
+| ---------------------- | --------- | ------------------------------------------------------- |
+| `MCP_PATH`             | `/mcp`    | Path the endpoint is mounted on                         |
+| `MCP_MAX_SESSIONS`     | `25`      | Concurrent sessions before `initialize` gets a `503`    |
+| `MCP_IDLE_TIMEOUT_MS`  | `1800000` | Close sessions that have been quiet for this long       |
+| `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                           |
+| `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                    |
+| `MCP_SERVICE_TOKEN_ID` | unset     | Service token Client ID the mapping accepts             |
+| `API_KEYS_DATA_FILE`   | unset     | Where API keys live — hashes only                       |
+| `ACCOUNTS_DATA_FILE`   | unset     | Where password accounts live — hashes only              |
+| `SESSIONS_DATA_FILE`   | unset     | Where sign-ins live — hashes only                       |
+| `SESSION_HOURS`        | `720`     | How long a sign-in lasts unused                         |
+| `ACCESS_NOT_VERIFIED`  | unset     | Dev only: trust Access assertions without checking them |
+| `CORS_ALLOW_ORIGINS`   | unset     | Other browser origins allowed to call the API           |
+| `TRUST_PROXY`          | unset     | Hops of X-Forwarded-* to believe, e.g. 1                |
 
 Sessions are in memory: restarting the server drops them and clients re-run the
 `initialize` handshake. Sessions whose client disappears are closed by the idle
@@ -340,7 +383,14 @@ sweep.
 ## Layout
 
 ```
-server/src/auth.ts          the credential chain: Access JWT, API key, dev identity
+server/src/auth.ts          the credential chain: Access JWT, API key, session, dev identity
+server/src/credentials.ts   reading credentials off a request: bearers, cookies, and their providers
+server/src/signIn.ts        sign in, sign out, sessions, and changing a password
+server/src/accounts.ts      the accounts a person is stored as
+server/src/sessions.ts      the sign-ins a browser is remembered by
+server/src/password.ts      scrypt hashing, with the cost carried in the record
+server/src/guard.ts         counting the guesses, and starting to wait
+server/src/cli/accounts.ts  the command line that makes an account
 server/src/keys.ts          API keys: minted by a person, kept as a hash
 server/src/mcp/http.ts        routes, session handshake, session lifecycle
 server/src/mcp/auth.ts        identity: Access JWT, bearer token, service-token mapping
