@@ -22,8 +22,10 @@ import {
   type LiveCursor,
   type LiveEditor,
 } from "shared";
-import { api, type Note } from "./api";
+import { api, type MeInfo, type Note } from "./api";
+import Account from "./components/Account";
 import AgentKeys from "./components/AgentKeys";
+import SignIn from "./components/SignIn";
 import { caretLabel } from "./carets";
 import { createLive, idleLiveHandlers, type LiveStatus } from "./live";
 import { mergePendingChanges } from "./pendingChanges";
@@ -93,6 +95,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [pane, setPane] = useState<Pane>("list");
   const [email, setEmail] = useState<string | null>(null);
+  // How the caller got in, which decides what the account panel can offer: a
+  // password can only be changed here if this app is the one that checks it.
+  const [via, setVia] = useState<MeInfo["via"] | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  // Only when the API did not know us *and* this installation has accounts: behind
+  // Cloudflare Access the edge turns a stranger away before any of this runs, and a
+  // login form here would be a door to nowhere.
+  const [needSignIn, setNeedSignIn] = useState(false);
   const [conflictedIds, setConflictedIds] = useState<Set<string>>(new Set());
   const [editorRevision, setEditorRevision] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
@@ -364,10 +374,20 @@ export default function App() {
     let cancelled = false;
     api
       .me()
-      .then(({ email: current }) => {
-        if (!cancelled) setEmail(current);
+      .then((current) => {
+        if (cancelled) return;
+        setEmail(current.email);
+        setVia(current.via);
       })
-      .catch(() => {});
+      .catch(() => {
+        // 401. Ask whether there is a password door to show before assuming one.
+        api.config().then(
+          (config) => {
+            if (!cancelled && config.accounts) setNeedSignIn(true);
+          },
+          () => {},
+        );
+      });
     api
       .list()
       .then((list) => {
@@ -622,6 +642,19 @@ export default function App() {
     selectedNote != null &&
     (selectedNote.owner === "" || selectedNote.owner === email);
 
+  // Before the app has any business showing itself.
+  if (needSignIn) {
+    return (
+      <SignIn
+        onSignedIn={() => {
+          // A fresh load, so the live socket, the queue and the notes are all
+          // built on the new session rather than patched up to it.
+          window.location.reload();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-dvh bg-white text-slate-900" data-pane={pane}>
       <aside
@@ -676,6 +709,17 @@ export default function App() {
             >
               <KeyRound size={18} />
             </button>
+            {via !== null && (
+              <button
+                type="button"
+                className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 text-[0.75rem] font-semibold text-slate-600 hover:bg-slate-100 active:bg-slate-100"
+                onClick={() => setAccountOpen(true)}
+                aria-label={`Account: ${email}`}
+                title="Account — devices, password, sign out"
+              >
+                {initialsFor(email ?? "")}
+              </button>
+            )}
             <button
               type="button"
               className="min-h-10 rounded-lg bg-slate-900 px-4 py-2 text-[0.9375rem] font-medium text-white hover:bg-slate-700 active:bg-slate-700"
@@ -869,6 +913,15 @@ export default function App() {
       </main>
 
       {keysOpen && <AgentKeys onClose={() => setKeysOpen(false)} />}
+      {accountOpen && via !== null && email !== null && (
+        <Account
+          me={{ email, via }}
+          onClose={() => setAccountOpen(false)}
+          // Signed out, or a password changed and every session with it: the way
+          // back is the door the app came in by, so start over.
+          onNeedSignIn={() => window.location.reload()}
+        />
+      )}
     </div>
   );
 }

@@ -26,7 +26,16 @@ export class ApiError extends Error {
   readonly body: unknown;
 
   constructor(status: number, statusText: string, body: unknown = undefined) {
-    super(`Request failed: ${status} ${statusText}`);
+    // The server's own words when it had some, and the status when it did not: this
+    // message is what a person reads on a form, and "Request failed: 401
+    // Unauthorized" tells them nothing about what to do next.
+    const spoken =
+      typeof body === "object" && body !== null && "error" in body
+        ? String((body as { error: unknown }).error)
+        : "";
+    super(
+      spoken.length > 0 ? spoken : `Request failed: ${status} ${statusText}`,
+    );
     this.name = "ApiError";
     this.status = status;
     this.body = body;
@@ -53,8 +62,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+// How a caller got in. The web client cannot see an Access token or an API key
+// from script code, so this is the only way it learns that it is looking at a
+// credential with no password behind it — which is the difference between offering
+// to change a password and explaining why it cannot.
+export type SignInMethod = "access" | "apikey" | "session" | "dev";
+
+export interface MeInfo {
+  email: string;
+  via: SignInMethod;
+}
+
+export interface AppConfig {
+  // Whether this installation has password accounts at all, or stands behind
+  // Access and nothing else.
+  accounts: boolean;
+  accessVerified: boolean;
+  sessionHours: number;
+}
+
+// One of this account's sign-ins: one browser, one device.
+export interface SessionInfo {
+  id: string;
+  email: string;
+  createdAt: string;
+  lastUsedAt: string;
+  expiresAt: string;
+  device: string;
+}
+
 export const api = {
-  me: () => request<{ email: string }>("/me"),
+  me: () => request<MeInfo>("/me"),
+  config: () => request<AppConfig>("/config"),
   list: () => request<Note[]>("/notes"),
   get: (id: string) => request<Note>(`/notes/${id}`),
   create: (content = "") =>
@@ -95,6 +134,23 @@ export const api = {
     request<void>("/push/subscription", {
       method: "DELETE",
       body: JSON.stringify({ endpoint }),
+    }),
+  signIn: (email: string, password: string) =>
+    request<MeInfo>("/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  signOut: () => request<void>("/logout", { method: "POST" }),
+  sessions: () =>
+    request<{ current: string | null; sessions: SessionInfo[] }>("/sessions"),
+  revokeSession: (id: string) =>
+    request<void>(`/sessions/${id}`, { method: "DELETE" }),
+  signOutEverywhere: () =>
+    request<{ revoked: number }>("/sessions", { method: "DELETE" }),
+  changePassword: (current: string, next: string) =>
+    request<{ ok: boolean }>("/password", {
+      method: "POST",
+      body: JSON.stringify({ current, next }),
     }),
   listKeys: () => request<ApiKeyInfo[]>("/keys"),
   createKey: (name: string) =>
