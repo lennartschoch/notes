@@ -90,8 +90,7 @@ test("a made-up password is meant to be read aloud", () => {
   // Letters and digits that survive being misread over a phone call.
   assert.ok(
     !/[ilo01]/.test(made),
-    made,
-    "nothing that gets misread over the phone",
+    `nothing that gets misread over the phone: ${made}`,
   );
   assert.notEqual(temporaryPassword(), temporaryPassword());
 });

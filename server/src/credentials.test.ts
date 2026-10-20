@@ -130,7 +130,8 @@ test("a session is never an agent, whatever it is doing", async () => {
 
 test("a sign-in is asked about after Access, and before the dev identity", async () => {
   process.env.DEV_USERS = "1";
-  const provider = withStore(async (token) => SESSIONS[token]);
+  // Only the store matters here: this chain is the app's own, not a list.
+  withStore(async (token) => SESSIONS[token]);
   try {
     // A browser that came through Access is served by Access; the cookie is for
     // deployments with nothing else.
