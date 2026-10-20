@@ -14,7 +14,8 @@ the REST API:
 | `DELETE /mcp` | closes the session                       |
 
 Because it lives in the app, an agent needs no second deployment: point it at
-`https://<your-notes-host>/mcp`. In development the Vite dev server proxies
+`https://<your-notes-host>/mcp` — one container runs the app and the endpoint
+([README](README.md)). In development the Vite dev server proxies
 `/mcp` to the API, so `http://localhost:5173/mcp` works too.
 
 ## Connecting
@@ -359,6 +360,12 @@ plus a resource list change), so an agent that keeps the index attached learns
 when a note goes stale.
 
 ## Settings
+
+These are the variables that decide who gets in and how the endpoint behaves. The
+ones an installation sets to _run_ the app at all — port, data directory, the
+Cloudflare team, TLS hops — are listed in
+[the README](README.md#settings), which repeats `TRUST_PROXY` and
+`CORS_ALLOW_ORIGINS` because they belong to both stories.
 
 | Variable               | Default   | Purpose                                                 |
 | ---------------------- | --------- | ------------------------------------------------------- |

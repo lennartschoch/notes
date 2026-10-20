@@ -1,0 +1,50 @@
+# The whole app in one container: the built SPA, the REST API, the live
+# WebSocket, web push, and /mcp — all served by the Express process the
+# Dockerfile builds. Nothing else is required to run it.
+#
+#   docker compose up -d --build      # build and start
+#   docker compose logs -f notes      # what it thinks about the network
+#   docker compose exec notes node server/dist/cli/accounts.js add you@example.com
+#
+# On http://<host>:4000 that is a working notes app for a LAN. For a browser
+# on the public internet, put TLS in front of it — see the README.
+
+services:
+  notes:
+    build: .
+    image: notes:local
+    container_name: notes
+    restart: unless-stopped
+    # PID 1 should be a real init: it forwards SIGTERM, so `docker stop` ends
+    # the process instead of waiting out the 10s timeout.
+    init: true
+    security_opt:
+      # The server never needs to gain privileges; the process already runs as
+      # the image's unprivileged `node` user.
+      - no-new-privileges:true
+    ports:
+      # Reachable from the LAN. Behind a reverse proxy on this same host, bind
+      # loopback only and let the proxy be the way in: 127.0.0.1:4000:4000
+      - "4000:4000"
+    volumes:
+      # Everything the app remembers lives beside the notes: notes.json,
+      # accounts.json, sessions.json, keys.json, push.json (the VAPID keys and
+      # subscriptions are generated on first boot). Losing this volume loses
+      # the notes and every credential the app minted.
+      - notes-data:/data
+    environment:
+      NODE_ENV: production
+      # The app is asked to tell the two apart: with no proxy in front, leave
+      # this unset, and it will believe it is plain HTTP — which is true, and
+      # keeps sign-ins on the `notes_session` cookie instead of promising a
+      # `__Host-` cookie it cannot mark Secure. Set it once TLS arrives.
+      # TRUST_PROXY: "1"
+      # Cross-origin browser calls, for a browser MCP client on another port.
+      # The API answers no other origin by default.
+      # CORS_ALLOW_ORIGINS: http://localhost:6274
+      # Days of last use before a sign-in ends (default 720 hours).
+      # SESSION_HOURS: "720"
+    # The image declares its own HEALTHCHECK on /api/health.
+
+volumes:
+  notes-data:
