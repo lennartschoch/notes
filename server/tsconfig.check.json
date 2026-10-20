@@ -1,0 +1,14 @@
+// The typecheck project: the build project's include, plus what it leaves out.
+//
+// server/tsconfig.json emits, so it does not compile the tests — an image that
+// runs `node dist/index.js` has no use for them. The tests are still typechecked,
+// because they are where a mistake is otherwise cheapest to make: the unit run goes
+// through tsx, which strips types without looking at them.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src"],
+  "exclude": []
+}

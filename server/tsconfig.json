@@ -13,5 +13,8 @@
     "resolveJsonModule": true,
     "sourceMap": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests are typechecked (tsconfig.check.json) but never emitted: the image runs
+  // dist/index.js, and a spec beside it is dead weight in a deployment.
+  "exclude": ["src/**/*.test.ts"]
 }
