@@ -152,6 +152,23 @@ must resolve to one.
   without it, an identity header is ignored and every anonymous request gets a
   `401`.
 
+**Naming the team.** Two variables say which Access this app is behind, and neither
+has a default:
+
+```env
+CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com   # whose keys sign an assertion
+CF_ACCESS_AUD=<application's aud tag>               # which application the token is for
+```
+
+They are public values — an issuer and an audience appear in every token Cloudflare
+mints for the app — but they are somebody's, and an app that inherited them from a
+repository would be signing its people up to a stranger's Access: no token would
+ever verify, and nothing would explain why. Unset, an assertion is refused on sight,
+without a request to the key set that does not exist, and the boot line reports the
+state. `ACCESS_NOT_VERIFIED` is a development signal and nothing more: an assertion
+is verified by signature in every configuration, so the flag reports a mood rather
+than opening a way in.
+
 ### Without Cloudflare Access
 
 Access is the easy way in — nobody has a password to steal, and this app keeps no
@@ -367,21 +384,23 @@ Cloudflare team, TLS hops — are listed in
 [the README](README.md#settings), which repeats `TRUST_PROXY` and
 `CORS_ALLOW_ORIGINS` because they belong to both stories.
 
-| Variable               | Default   | Purpose                                                 |
-| ---------------------- | --------- | ------------------------------------------------------- |
-| `MCP_PATH`             | `/mcp`    | Path the endpoint is mounted on                         |
-| `MCP_MAX_SESSIONS`     | `25`      | Concurrent sessions before `initialize` gets a `503`    |
-| `MCP_IDLE_TIMEOUT_MS`  | `1800000` | Close sessions that have been quiet for this long       |
-| `MCP_BODY_LIMIT`       | `4mb`     | Largest JSON-RPC request body                           |
-| `MCP_AGENT_EMAIL`      | unset     | Account a machine credential acts as                    |
-| `MCP_SERVICE_TOKEN_ID` | unset     | Service token Client ID the mapping accepts             |
-| `API_KEYS_DATA_FILE`   | unset     | Where API keys live — hashes only                       |
-| `ACCOUNTS_DATA_FILE`   | unset     | Where password accounts live — hashes only              |
-| `SESSIONS_DATA_FILE`   | unset     | Where sign-ins live — hashes only                       |
-| `SESSION_HOURS`        | `720`     | How long a sign-in lasts unused                         |
-| `ACCESS_NOT_VERIFIED`  | unset     | Dev only: trust Access assertions without checking them |
-| `CORS_ALLOW_ORIGINS`   | unset     | Other browser origins allowed to call the API           |
-| `TRUST_PROXY`          | unset     | Hops of X-Forwarded-* to believe, e.g. 1                |
+| Variable                | Default   | Purpose                                                  |
+| ----------------------- | --------- | -------------------------------------------------------- |
+| `MCP_PATH`              | `/mcp`    | Path the endpoint is mounted on                          |
+| `MCP_MAX_SESSIONS`      | `25`      | Concurrent sessions before `initialize` gets a `503`     |
+| `MCP_IDLE_TIMEOUT_MS`   | `1800000` | Close sessions that have been quiet for this long        |
+| `MCP_BODY_LIMIT`        | `4mb`     | Largest JSON-RPC request body                            |
+| `MCP_AGENT_EMAIL`       | unset     | Account a machine credential acts as                     |
+| `MCP_SERVICE_TOKEN_ID`  | unset     | Service token Client ID the mapping accepts              |
+| `API_KEYS_DATA_FILE`    | unset     | Where API keys live — hashes only                        |
+| `ACCOUNTS_DATA_FILE`    | unset     | Where password accounts live — hashes only               |
+| `SESSIONS_DATA_FILE`    | unset     | Where sign-ins live — hashes only                        |
+| `SESSION_HOURS`         | `720`     | How long a sign-in lasts unused                          |
+| `CF_ACCESS_TEAM_DOMAIN` | unset     | Whose keys sign an Access assertion; unset means none do |
+| `CF_ACCESS_AUD`         | unset     | The Access application a token has to be for             |
+| `ACCESS_NOT_VERIFIED`   | unset     | Dev only: reported to the client, never honoured         |
+| `CORS_ALLOW_ORIGINS`    | unset     | Other browser origins allowed to call the API            |
+| `TRUST_PROXY`           | unset     | Hops of X-Forwarded-* to believe, e.g. 1                 |
 
 Sessions are in memory: restarting the server drops them and clients re-run the
 `initialize` handshake. Sessions whose client disappears are closed by the idle

@@ -34,6 +34,12 @@ services:
       - notes-data:/data
     environment:
       NODE_ENV: production
+      # Behind Cloudflare Access, both are required: an issuer and an audience are
+      # not secrets, but they are somebody's, and there is no default here for
+      # the same reason there is none for a password. Without them an Access
+      # assertion is a claim, and gets a 401 — which the boot line says out loud.
+      # CF_ACCESS_TEAM_DOMAIN: your-team.cloudflareaccess.com
+      # CF_ACCESS_AUD: <the application's aud tag from Access>
       # The app is asked to tell the two apart: with no proxy in front, leave
       # this unset, and it will believe it is plain HTTP — which is true, and
       # keeps sign-ins on the `notes_session` cookie instead of promising a

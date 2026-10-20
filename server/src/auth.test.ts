@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import type { JWTPayload } from "jose";
 import {
   accessAssertion,
+  accessIsConfigured,
   accessProvider,
+  accessSettings,
   devProvider,
   resolveIdentity,
+  verifyAccessToken,
   type Credentials,
   type Provider,
 } from "./auth.js";
@@ -272,4 +275,27 @@ test("neither bearer credential is mistaken for the other", async () => {
     accessAssertion({ authorization: `Bearer ${API_KEY_PREFIX}good` }),
     "",
   );
+});
+
+test("an installation that names no Access team trusts no Access token", async () => {
+  // The issuer and the audience used to have defaults in the source, which meant
+  // a copy of this app verified its logins against somebody else's Access: no
+  // token would ever check out, and nothing would say why. Unset is now the state
+  // the unit run sees, so this is what it owes the reader.
+  assert.equal(
+    accessIsConfigured,
+    false,
+    "run the unit tests with CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD unset",
+  );
+  assert.match(accessSettings(), /not configured/);
+
+  // Not even a look at the token: with no key set there is nobody's signature to
+  // check, and asking a stranger's JWKS is a round trip towards a 401.
+  assert.equal(await verifyAccessToken("header.payload.signature"), undefined);
+
+  const outcome = await resolveIdentity(
+    [accessProvider({ verify: verifyAccessToken }), devProvider()],
+    { headers: { "cf-access-jwt-assertion": "header.payload.signature" } },
+  );
+  assert.deepEqual(outcome, { ok: false, reason: "invalid_token" });
 });

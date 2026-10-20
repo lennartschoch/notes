@@ -32,3 +32,28 @@ inherit it — or the tests will start disagreeing with the app around midnight.
 
 `MCP.md` says "today is the day on the app's own clock" under "To-do lists", and
 should say whose clock once this is done.
+
+## Decide what `ACCESS_NOT_VERIFIED` is for
+
+`server/src/credentials.ts` answers the question `accessAssertionsVerified()`, and
+that is the whole of what the variable does: the web client is told the app is not
+checking assertions, and `index.ts` warns a person running it next to local
+passwords. No code path skips the signature check — `providers()` hands
+`verifyAccessToken` to the Access provider and nothing else — so the switch has
+never once been the development door it documents itself as.
+
+Two honest endings, and they want different things:
+
+- **Delete it.** The app's own rule is that a credential is worth its signature,
+  full stop, and a setting that promises an exception it does not implement is a
+  lie in an environment variable: somebody will set it in production because the
+  name says that is how to debug a login. This removes a warning at boot and a
+  field from `/api/config`, and makes the rule shorter: there is one way to be
+  believed.
+- **Make it real.** A local server with no Access in front of it, driven by a
+  client that cannot get past the edge, is a thing worth testing — but then the
+  app is trusting an unsigned JWT by network position, which is exactly what
+  `DEV_USERS` is for and does better, since the dev identity is named and cannot
+  name an account nobody made.
+
+Deleting is what the code is already doing, so it is the smaller change.

@@ -31,29 +31,34 @@ export type {
   Provider,
 } from "./credentials.js";
 
-const TEAM_DOMAIN = (
-  process.env.CF_ACCESS_TEAM_DOMAIN ?? "example.cloudflareaccess.com"
-)
+// Which Cloudflare Access team's keys to check an assertion against, and which
+// application the token has to be for. Neither has a default: an issuer and an
+// audience are not secrets, but they are somebody's, and a copy of this app that
+// arrived at them by inheritance would be verifying its logins against a stranger's
+// Access — accepting nothing, and warning nobody.
+const TEAM_DOMAIN = (process.env.CF_ACCESS_TEAM_DOMAIN ?? "")
   .replace(/^https?:\/\//, "")
-  .replace(/\/+$/, "");
-const AUDIENCE =
-  process.env.CF_ACCESS_AUD ??
-  "32eafc7626e974616deaf0dc3ce63d7bcbed58a2731e84d06bc3cdf1b53c4228";
+  .replace(/\/+$/, "")
+  .trim();
+const AUDIENCE = (process.env.CF_ACCESS_AUD ?? "").trim();
+
+// Configured means both halves are named: a team without an audience would accept
+// a token minted for any of that team's applications, an audience without a team
+// has no keys to check it against.
+export const accessIsConfigured = TEAM_DOMAIN.length > 0 && AUDIENCE.length > 0;
 
 const ISSUER = `https://${TEAM_DOMAIN}`;
-const JWKS = createRemoteJWKSet(new URL(`${ISSUER}/cdn-cgi/access/certs`));
+const JWKS = accessIsConfigured
+  ? createRemoteJWKSet(new URL(`${ISSUER}/cdn-cgi/access/certs`))
+  : null;
 
-// The defaults above are this deployment's own team. A production process
-// that did not set them is verifying tokens against somebody's Access, so
-// say so loudly at boot instead of failing mysteriously at first login.
-if (
-  process.env.NODE_ENV === "production" &&
-  (!process.env.CF_ACCESS_TEAM_DOMAIN || !process.env.CF_ACCESS_AUD)
-) {
-  console.warn(
-    "Warning: running in production with the built-in Cloudflare Access team domain/audience. " +
-      "Set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD to your own values.",
-  );
+// What the boot line says, in one place so the sentence and the setting cannot
+// drift apart.
+export function accessSettings(): string {
+  return accessIsConfigured
+    ? `verifying assertions from ${TEAM_DOMAIN} for audience ${AUDIENCE}`
+    : "not configured — set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD " +
+        "(an Access assertion gets a 401)";
 }
 
 declare global {
@@ -150,10 +155,12 @@ export function accessProvider({ verify, machine }: AccessOptions): Provider {
 }
 
 // Verifies an Access JWT against the team's JWKS and returns its claims, or
-// undefined when the token is not valid for this app.
+// undefined when the token is not valid for this app — which includes this app
+// having no team to be valid for.
 export async function verifyAccessToken(
   token: string,
 ): Promise<JWTPayload | undefined> {
+  if (JWKS === null) return undefined;
   try {
     const { payload } = await jwtVerify(token, JWKS, {
       issuer: ISSUER,

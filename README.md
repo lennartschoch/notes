@@ -45,6 +45,7 @@ browser:
 ```
 Notes API listening on http://localhost:4000
   browsers: same-origin only; proxy: not trusted (set TRUST_PROXY behind a reverse proxy)
+  access: not configured — set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD (an Access assertion gets a 401)
 ```
 
 ## Who gets in
@@ -64,9 +65,10 @@ Cloudflare's signature behind it is not an identity, it is a 401.
   nobody has a password to steal, and this app keeps no secret of its own. It
   still needs the app's own [API keys](MCP.md#authentication) for agents, because
   a service token has to be pinned to an account here anyway. Set
-  `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` to your own — the fallbacks compiled
-  into `server/src/auth.ts` are one person's team, and the app warns at boot when
-  it is running in production on them.
+  `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` — there is no default, because a
+  team domain and an audience are somebody's, and an app that inherited them from
+  a repository would be checking its logins against a stranger's Access. Unset,
+  an Access assertion is worth a 401, and the boot line says so.
 - **Passwords** are the app's own door: [scrypt](MCP.md#passwords-for-people)
   hashes, opaque session cookies, revocation that actually revokes, and no answer
   that distinguishes a wrong password from an unknown address. Nothing about it
@@ -145,8 +147,8 @@ For the credential and MCP knobs, the table in
 | `PORT`                  | `4000`                          | Port the API listens on, inside the container                          |
 | `NODE_ENV`              | —                               | `production`: the client bundle is served, and dev escapes are refused |
 | `NOTES_DATA_FILE`       | `/data/notes.json` in the image | Where the notes live; the file above hangs off this directory          |
-| `CF_ACCESS_TEAM_DOMAIN` | built-in                        | Your Access team's `*.cloudflareaccess.com`                            |
-| `CF_ACCESS_AUD`         | built-in                        | The Access application's audience                                      |
+| `CF_ACCESS_TEAM_DOMAIN` | unset                           | Your Access team's `*.cloudflareaccess.com`                            |
+| `CF_ACCESS_AUD`         | unset                           | The Access application's audience; without both, Access gets a 401     |
 | `TRUST_PROXY`           | unset                           | Hops of `X-Forwarded-*` to believe                                     |
 | `CORS_ALLOW_ORIGINS`    | unset                           | Other browser origins allowed to call the API (`*` is refused)         |
 

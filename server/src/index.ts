@@ -8,7 +8,7 @@ import express, {
   type Response,
 } from "express";
 import { z } from "zod";
-import { requireUser } from "./auth.js";
+import { accessSettings, requireUser } from "./auth.js";
 import { parseBody } from "./body.js";
 import {
   accessAssertionsVerified,
@@ -338,6 +338,10 @@ const httpServer = app.listen(PORT, () => {
         : `trusted (${String(proxy)})`
     }`,
   );
+  // The third thing this app cannot work out for itself: whose signature counts
+  // as Cloudflare's. Without it an Access assertion is only a claim, and the app
+  // says so here rather than leaving a person to wonder why the door stayed shut.
+  console.log(`  access: ${accessSettings()}`);
 });
 // Live sync: the /ws upgrade rides the same HTTP server (and the same
 // Cloudflare Access identity) as the REST API.
