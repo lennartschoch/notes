@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import {
@@ -78,6 +79,7 @@ const FAILURE_BODY: Record<AuthFailure, { error: string }> = {
   invalid_session: {
     error: "This sign-in is no longer valid. Sign in again.",
   },
+  invalid_proxy: { error: "Unauthorized" },
   no_account: {
     error:
       "This Access token has no account to act as. A service token must match MCP_SERVICE_TOKEN_ID, and MCP_AGENT_EMAIL must name the account.",
@@ -201,6 +203,49 @@ function lowerEmail(value: string): string {
   return value.trim().toLowerCase();
 }
 
+// ------------------------------------------------------ trusted reverse proxy
+
+// The identity a reverse proxy authenticated for us and copied into a header.
+// Authelia (through Caddy) puts the person's email in `Remote-Email`; a header
+// alone proves nothing, so this provider believes it only when the request also
+// carries a secret that never leaves the two servers — Caddy sets it from
+// `NOTES_PROXY_SECRET` and this app reads the same value. Present but wrong, or
+// present with no secret configured, refuses rather than falls through: a
+// credential that was shown is not an invitation to try the next one.
+//
+// With no secret header at all the provider passes, so a deployment that is not
+// behind such a proxy (Access, or this app's own password and keys) is
+// unaffected. The identity header is fixed to Authelia's `Remote-Email` on
+// purpose: this reads one proxy's word, it is not a general "trust any header"
+// hole.
+const PROXY_SECRET_HEADER = "x-notes-proxy-secret";
+const PROXY_EMAIL_HEADER = "remote-email";
+
+function constantTimeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  // timingSafeEqual throws on differing lengths; comparing length first leaks
+  // only the length, which a fixed-size secret already knows.
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+export function proxyIdentityProvider(): Provider {
+  return {
+    kind: "proxy",
+    async match({ headers }) {
+      const presented = headerValue(headers, PROXY_SECRET_HEADER);
+      if (presented.length === 0) return PASS;
+      const expected = (process.env.NOTES_PROXY_SECRET ?? "").trim();
+      if (expected.length === 0 || !constantTimeEqual(presented, expected)) {
+        return { kind: "deny", reason: "invalid_proxy" };
+      }
+      const email = lowerEmail(headerValue(headers, PROXY_EMAIL_HEADER));
+      if (email.length === 0) return { kind: "deny", reason: "invalid_proxy" };
+      return { kind: "identity", identity: { email, via: "proxy" } };
+    },
+  };
+}
+
 // The one chain, in precedence order: this app's own API key, a person's Access
 // token, the machine credential the operator pinned, a session cookie this app
 // signed, then the dev identity. No two of them can be mistaken for each other —
@@ -216,6 +261,7 @@ export function providers(
 ): Provider[] {
   return [
     apiKeyProvider(),
+    proxyIdentityProvider(),
     accessProvider({ verify: verifyAccessToken, machine }),
     sessionProvider(),
     devProvider(),

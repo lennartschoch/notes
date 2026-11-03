@@ -11,7 +11,7 @@ import type { Actor } from "./types.js";
 // Which kind of credential granted an identity. Named after the credential,
 // never after anything the caller says about itself, so a machine cannot
 // describe its way into appearing to be a person.
-export type CredentialKind = "access" | "apikey" | "session" | "dev";
+export type CredentialKind = "access" | "apikey" | "session" | "proxy" | "dev";
 
 // An identity, ready to be used as an Actor. `via` records where the grant came
 // from, for this app's own bookkeeping; whether an agent was driving the account
@@ -36,6 +36,7 @@ export type AuthFailure =
   | "invalid_token"
   | "invalid_key"
   | "invalid_session"
+  | "invalid_proxy"
   | "no_account";
 
 // Everything a provider may read a credential off: the headers of an HTTP
